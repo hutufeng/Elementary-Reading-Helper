@@ -1,0 +1,28 @@
+﻿package com.assistant.reading.core.ocr
+
+import android.content.Context
+import android.net.Uri
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+
+class OcrManager(private val context: Context) {
+    private val recognizer = TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
+
+    suspend fun recognizeTextFromUri(imageUri: Uri): String = suspendCancellableCoroutine { continuation ->
+        try {
+            val image = InputImage.fromFilePath(context, imageUri)
+            recognizer.process(image)
+                .addOnSuccessListener { visionText ->
+                    val fullText = visionText.textBlocks.joinToString("\n") { it.text }
+                    continuation.resume(fullText)
+                }
+                .addOnFailureListener { e -> continuation.resumeWithException(e) }
+        } catch (e: Exception) {
+            continuation.resumeWithException(e)
+        }
+    }
+}
