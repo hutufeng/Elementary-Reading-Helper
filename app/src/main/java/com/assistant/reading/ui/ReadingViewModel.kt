@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.assistant.reading.BuildConfig
+import com.assistant.reading.core.ai.ApiKeyManager
 import com.assistant.reading.core.ai.ChatMessage
 import com.assistant.reading.core.ai.ZhipuAiClient
 import com.assistant.reading.core.ocr.OcrManager
@@ -32,10 +33,18 @@ data class ReadingUiState(
 class ReadingViewModel(application: Application) : AndroidViewModel(application) {
 
     private val ocrManager = OcrManager(application)
-    private val aiClient = ZhipuAiClient(apiKey = BuildConfig.ZHIPU_API_KEY)
+    private val aiClient = ZhipuAiClient { ApiKeyManager.getApiKey(getApplication()) }
 
     private val _uiState = MutableStateFlow(ReadingUiState())
     val uiState: StateFlow<ReadingUiState> = _uiState.asStateFlow()
+
+    fun saveApiKey(key: String) {
+        ApiKeyManager.saveApiKey(getApplication(), key)
+    }
+
+    fun getApiKey(): String = ApiKeyManager.getApiKey(getApplication())
+
+    fun isKeyConfigured(): Boolean = ApiKeyManager.isKeyConfigured(getApplication())
 
     fun updateInputText(text: String) {
         _uiState.value = _uiState.value.copy(inputText = text)

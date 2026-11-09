@@ -18,7 +18,9 @@ data class ChatMessage(
     val content: String
 )
 
-class ZhipuAiClient(private val apiKey: String) {
+class ZhipuAiClient(private val apiKeyProvider: () -> String) {
+
+    constructor(staticApiKey: String) : this({ staticApiKey })
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -107,9 +109,16 @@ class ZhipuAiClient(private val apiKey: String) {
             put("messages", jsonMessages)
         }
 
+        val key = apiKeyProvider()
+        if (key.isBlank()) {
+            trySend("⚠️ 提示：您尚未配置 API Key。请点击右上角【设置 (⚙️)】按钮填入免费领取的智谱 API Key 即可使用！")
+            close()
+            return@callbackFlow
+        }
+
         val request = Request.Builder()
             .url("https://open.bigmodel.cn/api/paas/v4/chat/completions")
-            .addHeader("Authorization", "Bearer $apiKey")
+            .addHeader("Authorization", "Bearer $key")
             .addHeader("Content-Type", "application/json")
             .post(requestBodyJson.toString().toRequestBody("application/json".toMediaType()))
             .build()

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.speech.RecognizerIntent
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -21,6 +22,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -42,6 +46,8 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 val vm: ReadingViewModel = viewModel()
                 val uiState by vm.uiState.collectAsState()
+                val context = LocalContext.current
+                var showSettingsDialog by remember { mutableStateOf(false) }
 
                 // 图片选择 / 拍照
                 val imgPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
@@ -76,6 +82,9 @@ class MainActivity : ComponentActivity() {
                             actions = {
                                 IconButton(onClick = { vm.changeFontSize(-2) }) { Text("A-") }
                                 IconButton(onClick = { vm.changeFontSize(2) }) { Text("A+") }
+                                IconButton(onClick = { showSettingsDialog = true }) {
+                                    Icon(Icons.Default.Settings, contentDescription = "AI 设置")
+                                }
                             }
                         )
                     }
@@ -145,7 +154,14 @@ class MainActivity : ComponentActivity() {
                         Spacer(modifier = Modifier.height(8.dp))
 
                         Button(
-                            onClick = { vm.startReadingAssistant() },
+                            onClick = {
+                                if (!vm.isKeyConfigured()) {
+                                    showSettingsDialog = true
+                                    Toast.makeText(context, "请先设置您的智谱 API Key 即可开始使用", Toast.LENGTH_LONG).show()
+                                } else {
+                                    vm.startReadingAssistant()
+                                }
+                            },
                             modifier = Modifier.fillMaxWidth().height(46.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2C6454))
                         ) {
@@ -182,7 +198,7 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(modifier = Modifier.height(20.dp))
 
-                        // 4. 【新增】自由 AI 互动问答室 (随问随答)
+                        // 4. 自由 AI 互动问答室 (随问随答)
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             colors = CardDefaults.cardColors(containerColor = Color(0xFFF3EFE6)),
@@ -253,7 +269,14 @@ class MainActivity : ComponentActivity() {
                                     }
 
                                     Button(
-                                        onClick = { vm.sendChatQuestion() },
+                                        onClick = {
+                                            if (!vm.isKeyConfigured()) {
+                                                showSettingsDialog = true
+                                                Toast.makeText(context, "请先设置您的智谱 API Key 即可开始使用", Toast.LENGTH_LONG).show()
+                                            } else {
+                                                vm.sendChatQuestion()
+                                            }
+                                        },
                                         enabled = uiState.chatQuestion.isNotBlank() && !uiState.isChatLoading
                                     ) {
                                         Text("提问")
@@ -262,6 +285,67 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
+                }
+
+                // 5. 【新增】AI 模型与 API Key 设置对话框
+                if (showSettingsDialog) {
+                    var tempKey by remember { mutableStateOf(vm.getApiKey()) }
+                    var isPasswordVisible by remember { mutableStateOf(false) }
+
+                    AlertDialog(
+                        onDismissRequest = { showSettingsDialog = false },
+                        title = { Text("⚙️ AI 模型服务设置", fontSize = 18.sp, color = Color(0xFF1B3B5A)) },
+                        text = {
+                            Column {
+                                Text(
+                                    text = "本应用默认使用 智谱 GLM-4-Flash 大模型，官方永久免费调用。\n请在下方粘贴您领取的免费 API Key：",
+                                    fontSize = 13.sp,
+                                    lineHeight = 18.sp,
+                                    color = Color(0xFF444444)
+                                )
+                                Spacer(modifier = Modifier.height(10.dp))
+                                OutlinedTextField(
+                                    value = tempKey,
+                                    onValueChange = { tempKey = it },
+                                    label = { Text("智谱 API Key") },
+                                    placeholder = { Text("如 6xxx.xxx 格式") },
+                                    singleLine = true,
+                                    visualTransformation = if (isPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                                    trailingIcon = {
+                                        IconButton(onClick = { isPasswordVisible = !isPasswordVisible }) {
+                                            Icon(
+                                                if (isPasswordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                                contentDescription = "查看密钥"
+                                            )
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = "💡 提示：访问 bigmodel.cn 即可免费领取；保存后本地持久化生效，无需重新打包 APK。",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF888888)
+                                )
+                            }
+                        },
+                        confirmButton = {
+                            Button(
+                                onClick = {
+                                    vm.saveApiKey(tempKey)
+                                    Toast.makeText(context, "API Key 保存成功，已立即生效！", Toast.LENGTH_SHORT).show()
+                                    showSettingsDialog = false
+                                }
+                            ) {
+                                Text("保存生效")
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showSettingsDialog = false }) {
+                                Text("取消")
+                            }
+                        }
+                    )
                 }
             }
         }
