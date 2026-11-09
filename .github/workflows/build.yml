@@ -28,22 +28,19 @@ jobs:
       with:
         distribution: 'temurin'
         java-version: '17'
+        cache: 'gradle'
 
-    - name: 配置 Gradle 8.4 环境与依赖缓存
-      uses: gradle/actions/setup-gradle@v3
-      with:
-        gradle-version: '8.4'
-
-    - name: 确保 Gradle Wrapper 兼容
-      run: gradle wrapper --gradle-version 8.4 --distribution-type bin
+    - name: 补全 Gradle Wrapper
+      run: gradle wrapper
 
     - name: 赋予 Gradle 执行权限
       run: chmod +x gradlew
 
-    - name: 执行编译 (分配 4GB JVM 堆内存)
+    - name: 执行编译 (分配 4GB 内存)
       env:
         ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
-        GRADLE_OPTS: "-Dorg.gradle.jvmargs='-Xmx4096m -XX:MaxMetaspaceSize=1024m'"
+        JAVA_OPTS: "-Xmx4096m -XX:MaxMetaspaceSize=1024m"
+        GRADLE_OPTS: "-Dorg.gradle.jvmargs='-Xmx4096m -XX:MaxMetaspaceSize=1024m' -Dorg.gradle.daemon=false"
       run: |
         BUILD_TYPE="${{ inputs.build_type || 'debug' }}"
         if [ "$BUILD_TYPE" = "release" ]; then
