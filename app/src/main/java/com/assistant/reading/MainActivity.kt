@@ -11,6 +11,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -28,6 +29,9 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.assistant.reading.BuildConfig
+import com.assistant.reading.core.ai.AppSettingsManager
+import com.assistant.reading.core.update.UpdateManager
 import com.assistant.reading.core.voice.VoiceManager
 import com.assistant.reading.ui.ReadingSection
 import com.assistant.reading.ui.ReadingViewModel
@@ -80,10 +84,67 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                // 监听更新检测结果提示
+                LaunchedEffect(uiState.updateMessage) {
+                    uiState.updateMessage?.let { msg ->
+                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                        vm.dismissUpdateMessage()
+                    }
+                }
+
+                // 新版本更新提示弹窗
+                uiState.updateInfo?.let { updateInfo ->
+                    AlertDialog(
+                        onDismissRequest = { vm.dismissUpdateDialog() },
+                        title = {
+                            Text("🚀 发现新版本 ${updateInfo.latestVersion}", fontSize = 16.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                        },
+                        text = {
+                            Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+                                Text("当前版本：v${BuildConfig.VERSION_NAME}", fontSize = 12.sp, color = Color.Gray)
+                                Text("最新版本：${updateInfo.latestVersion}", fontSize = 12.sp, color = Color(0xFF1B3B5A), fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text("更新日志：", fontSize = 13.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Medium)
+                                Text(
+                                    text = updateInfo.releaseNotes.ifBlank { "包含多项性能优化与细节改进。" },
+                                    fontSize = 12.sp,
+                                    lineHeight = 18.sp,
+                                    color = Color(0xFF333333)
+                                )
+                            }
+                        },
+                        confirmButton = {
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                OutlinedButton(
+                                    onClick = {
+                                        UpdateManager.openDownloadUrl(context, updateInfo.officialDownloadUrl)
+                                        vm.dismissUpdateDialog()
+                                    }
+                                ) {
+                                    Text("官方源")
+                                }
+                                Button(
+                                    onClick = {
+                                        UpdateManager.openDownloadUrl(context, updateInfo.mirrorDownloadUrl)
+                                        vm.dismissUpdateDialog()
+                                    }
+                                ) {
+                                    Text("🚀 高速下载")
+                                }
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { vm.dismissUpdateDialog() }) {
+                                Text("稍后再说")
+                            }
+                        }
+                    )
+                }
+
                 Scaffold(
                     topBar = {
                         TopAppBar(
-                            title = { Text("📖 名师阅读伴读小助手", fontSize = 18.sp) },
+                            title = { Text("📖 智能阅读伴读助手", fontSize = 18.sp) },
                             colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFFECE6D8)),
                             actions = {
                                 IconButton(onClick = { vm.changeFontSize(-2) }) { Text("A-") }
@@ -113,7 +174,7 @@ class MainActivity : ComponentActivity() {
                                     val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                                         putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                                         putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.CHINESE.toString())
-                                        putExtra(RecognizerIntent.EXTRA_PROMPT, "说出想读的课文名或篇名...")
+                                        putExtra(RecognizerIntent.EXTRA_PROMPT, "说出想读的课文名、名篇或短文...")
                                     }
                                     speechLauncher.launch(intent)
                                 }
@@ -126,7 +187,7 @@ class MainActivity : ComponentActivity() {
                             FilledTonalButton(onClick = { imgPicker.launch("image/*") }) {
                                 Icon(Icons.Default.PhotoCamera, null, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text("拍课本")
+                                Text("拍书籍")
                             }
 
                             Button(
@@ -152,14 +213,14 @@ class MainActivity : ComponentActivity() {
                         OutlinedTextField(
                             value = uiState.inputText,
                             onValueChange = { vm.updateInputText(it) },
-                            placeholder = { Text("输入篇名（如：3年级上册14课、古诗、文言文、小兴安岭）或粘贴文本...") },
+                            placeholder = { Text("输入篇名（如：古诗、文言文、课文或任意经典名篇）或直接粘贴长短文...") },
                             modifier = Modifier.fillMaxWidth().height(110.dp),
                             textStyle = LocalTextStyle.current.copy(fontSize = uiState.fontSizeSp.sp)
                         )
 
                         Spacer(modifier = Modifier.height(8.dp))
 
-                        // 【新增特性 1】：全文逐句精讲与文白对照开关
+                        // 【需求 1 & 2】：逐句精讲与文白全景对照 (默认关闭，依据文本按需开启)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
@@ -172,8 +233,8 @@ class MainActivity : ComponentActivity() {
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Column {
-                                    Text("📜 开启全文逐句精讲与文白对照", fontSize = 13.sp, color = Color(0xFF2C3E50))
-                                    Text("特别适合文言文、古诗词及深奥文本逐句通透解密", fontSize = 10.sp, color = Color.Gray)
+                                    Text("📜 开启全文逐句精讲与文白对照 (默认关闭)", fontSize = 13.sp, color = Color(0xFF2C3E50))
+                                    Text("依据文章内容逐句通透解密，特别适合古诗词、文言文及深奥经典", fontSize = 10.sp, color = Color.Gray)
                                 }
                             }
                         }
@@ -184,7 +245,7 @@ class MainActivity : ComponentActivity() {
                             onClick = {
                                 if (!vm.isKeyConfigured()) {
                                     showSettingsDialog = true
-                                    Toast.makeText(context, "请先设置您的智谱 API Key 即可开始使用", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(context, "请先在设置中配置您的 AI API Key 即可使用", Toast.LENGTH_LONG).show()
                                 } else {
                                     vm.startReadingAssistant()
                                 }
@@ -194,7 +255,7 @@ class MainActivity : ComponentActivity() {
                         ) {
                             Icon(Icons.Default.AutoStories, null)
                             Spacer(Modifier.width(8.dp))
-                            Text("开始名师全景深度导读", fontSize = 16.sp)
+                            Text("开始全景深度导读", fontSize = 16.sp)
                         }
 
                         if (uiState.isLoading) {
@@ -202,10 +263,10 @@ class MainActivity : ComponentActivity() {
                             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                         }
 
-                        // 【新增特性 3】：全景导学按段落/章节拆分卡片，每段附带独立朗读功能
+                        // 3. 全景导读按段落/章节拆分卡片，每段附带独立朗读功能
                         if (uiState.sections.isNotEmpty()) {
                             Spacer(modifier = Modifier.height(14.dp))
-                            Text("🎯 名师全景深度导学与全套知识点：", style = MaterialTheme.typography.titleMedium, color = Color(0xFF1B3B5A))
+                            Text("🎯 全景深度导读与全套知识点清单：", style = MaterialTheme.typography.titleMedium, color = Color(0xFF1B3B5A))
                             Spacer(modifier = Modifier.height(8.dp))
 
                             uiState.sections.forEach { section ->
@@ -219,7 +280,6 @@ class MainActivity : ComponentActivity() {
                                 Spacer(modifier = Modifier.height(10.dp))
                             }
                         } else if (uiState.readingResult.isNotBlank()) {
-                            // 备用单卡片显示
                             Spacer(modifier = Modifier.height(14.dp))
                             Card(
                                 modifier = Modifier.fillMaxWidth(),
@@ -251,7 +311,7 @@ class MainActivity : ComponentActivity() {
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text("💬 名师互动问答室", style = MaterialTheme.typography.titleMedium, color = Color(0xFF335544))
+                                    Text("💬 伴读互动问答室", style = MaterialTheme.typography.titleMedium, color = Color(0xFF335544))
                                     if (uiState.chatHistory.isNotEmpty()) {
                                         TextButton(onClick = { vm.clearChatHistory() }) {
                                             Text("清空对话", fontSize = 12.sp)
@@ -260,7 +320,7 @@ class MainActivity : ComponentActivity() {
                                 }
 
                                 Text(
-                                    text = "读不懂哪里随时问！可追问文中句子词语，或自由请教写作、古诗、语文常识。",
+                                    text = "随时针对文中字词、句意、背景追问，或自由请教写作灵感、古文典故与文学常识。",
                                     fontSize = 12.sp,
                                     color = Color(0xFF666666)
                                 )
@@ -291,7 +351,7 @@ class MainActivity : ComponentActivity() {
                                     OutlinedTextField(
                                         value = uiState.chatQuestion,
                                         onValueChange = { vm.updateChatQuestion(it) },
-                                        placeholder = { Text("向名师提问...", fontSize = 14.sp) },
+                                        placeholder = { Text("向导师提问...", fontSize = 14.sp) },
                                         modifier = Modifier.weight(1f).height(52.dp),
                                         singleLine = true
                                     )
@@ -313,7 +373,7 @@ class MainActivity : ComponentActivity() {
                                         onClick = {
                                             if (!vm.isKeyConfigured()) {
                                                 showSettingsDialog = true
-                                                Toast.makeText(context, "请先设置您的智谱 API Key 即可开始使用", Toast.LENGTH_LONG).show()
+                                                Toast.makeText(context, "请先在设置中配置您的 AI API Key 即可使用", Toast.LENGTH_LONG).show()
                                             } else {
                                                 vm.sendChatQuestion()
                                             }
@@ -328,25 +388,45 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // 5. 【增强型】设置对话框：API Key + 朗读语速精细调节
+                // 5. 【需求 3】：支持自定义 API 地址、模型切换、语速设置与详尽使用说明对话框
                 if (showSettingsDialog) {
                     var tempKey by remember { mutableStateOf(vm.getApiKey()) }
+                    var tempBaseUrl by remember { mutableStateOf(uiState.apiBaseUrl) }
+                    var tempModel by remember { mutableStateOf(uiState.modelName) }
                     var tempRate by remember { mutableStateOf(uiState.speechRate) }
                     var isPasswordVisible by remember { mutableStateOf(false) }
+                    var showDocSection by remember { mutableStateOf(false) }
 
                     AlertDialog(
                         onDismissRequest = { showSettingsDialog = false },
-                        title = { Text("⚙️ 伴学与朗读设置", fontSize = 18.sp, color = Color(0xFF1B3B5A)) },
+                        title = {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("⚙️ 服务配置与个性化", fontSize = 18.sp, color = Color(0xFF1B3B5A))
+                                TextButton(
+                                    onClick = {
+                                        vm.resetAiConfigToDefaults()
+                                        tempBaseUrl = AppSettingsManager.DEFAULT_BASE_URL
+                                        tempModel = AppSettingsManager.DEFAULT_MODEL_NAME
+                                        Toast.makeText(context, "已恢复智谱 GLM-4-Flash 官方默认配置", Toast.LENGTH_SHORT).show()
+                                    }
+                                ) {
+                                    Text("恢复默认", fontSize = 11.sp)
+                                }
+                            }
+                        },
                         text = {
-                            Column {
-                                // 语速设置区域
+                            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                                // 语速设置
                                 Text(
-                                    text = "🔊 朗读语速调节 (当前: ${"%.2f".format(tempRate)}x)",
-                                    fontSize = 14.sp,
+                                    text = "🔊 朗读语速调节 (${"%.2f".format(tempRate)}x)",
+                                    fontSize = 13.sp,
                                     style = MaterialTheme.typography.titleSmall,
                                     color = Color(0xFF333333)
                                 )
-                                Spacer(modifier = Modifier.height(4.dp))
                                 Slider(
                                     value = tempRate,
                                     onValueChange = { tempRate = it },
@@ -362,21 +442,40 @@ class MainActivity : ComponentActivity() {
                                     TextButton(onClick = { tempRate = 1.15f }) { Text("1.15x 快速复习", fontSize = 10.sp) }
                                 }
 
-                                Divider(modifier = Modifier.padding(vertical = 10.dp))
+                                Divider(modifier = Modifier.padding(vertical = 8.dp))
 
-                                // API Key 设置区域
-                                Text(
-                                    text = "🔑 智谱 AI 密钥 (官方 GLM-4-Flash 永久免费)",
-                                    fontSize = 14.sp,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = Color(0xFF333333)
+                                // AI 接口地址 (Base URL)
+                                Text("🌐 API 接口地址 (Base URL)", fontSize = 13.sp, style = MaterialTheme.typography.titleSmall, color = Color(0xFF333333))
+                                OutlinedTextField(
+                                    value = tempBaseUrl,
+                                    onValueChange = { tempBaseUrl = it },
+                                    placeholder = { Text("如 https://open.bigmodel.cn/api/paas/v4") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    textStyle = LocalTextStyle.current.copy(fontSize = 12.sp)
                                 )
+
                                 Spacer(modifier = Modifier.height(6.dp))
+
+                                // 模型名称 (Model)
+                                Text("🤖 模型名称 (Model Name)", fontSize = 13.sp, style = MaterialTheme.typography.titleSmall, color = Color(0xFF333333))
+                                OutlinedTextField(
+                                    value = tempModel,
+                                    onValueChange = { tempModel = it },
+                                    placeholder = { Text("如 glm-4-flash / deepseek-chat") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    textStyle = LocalTextStyle.current.copy(fontSize = 12.sp)
+                                )
+
+                                Spacer(modifier = Modifier.height(6.dp))
+
+                                // API Key
+                                Text("🔑 API Key 密钥", fontSize = 13.sp, style = MaterialTheme.typography.titleSmall, color = Color(0xFF333333))
                                 OutlinedTextField(
                                     value = tempKey,
                                     onValueChange = { tempKey = it },
-                                    label = { Text("智谱 API Key") },
-                                    placeholder = { Text("如 6xxx.xxx 格式") },
+                                    placeholder = { Text("粘贴对应平台提供的 API Key") },
                                     singleLine = true,
                                     visualTransformation = if (isPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
                                     trailingIcon = {
@@ -387,23 +486,109 @@ class MainActivity : ComponentActivity() {
                                             )
                                         }
                                     },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    textStyle = LocalTextStyle.current.copy(fontSize = 12.sp)
+                                )
+
+                                Spacer(modifier = Modifier.height(10.dp))
+
+                                // 详细使用说明与第三方模型配置帮助 (点击展开/折叠)
+                                Card(
+                                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF0EAE1)),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.fillMaxWidth().clickable { showDocSection = !showDocSection }
+                                ) {
+                                    Column(modifier = Modifier.padding(10.dp)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text("📖 配置说明与模型切换指引", fontSize = 12.sp, style = MaterialTheme.typography.titleSmall, color = Color(0xFF1B3B5A))
+                                            Icon(
+                                                if (showDocSection) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+
+                                        if (showDocSection) {
+                                            Spacer(modifier = Modifier.height(6.dp))
+                                            Text(
+                                                text = """
+                                                    1. 官方推荐 (零成本首选):
+                                                       • 平台: 智谱 BigModel (open.bigmodel.cn)
+                                                       • 接口: https://open.bigmodel.cn/api/paas/v4
+                                                       • 模型: glm-4-flash (官方永久免费调用)
+                                                       • 密钥: 注册后在开放平台控制台免费创建即可。
+
+                                                    2. 扩充支持其他 OpenAI 兼容大模型:
+                                                       本应用基于标准 OpenAI API 规范设计，您可自由切换为其它主流服务商：
+                                                       • DeepSeek:
+                                                         接口: https://api.deepseek.com
+                                                         模型: deepseek-chat
+                                                       • 阿里通义千问 (DashScope):
+                                                         接口: https://dashscope.aliyuncs.com/compatible-mode/v1
+                                                         模型: qwen-turbo 或 qwen-plus
+                                                       • 自建反向代理 / One-API:
+                                                         直接填入您的代理 URL 与对应模型名即可。
+
+                                                    3. 即调即生效:
+                                                       保存后直接写入手机本地安全存储，无需重新编译 APK。
+                                                """.trimIndent(),
+                                                fontSize = 11.sp,
+                                                lineHeight = 16.sp,
+                                                color = Color(0xFF444444)
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(10.dp))
+
+                                // 软件版本与手动检查升级
+                                Card(
+                                    colors = CardDefaults.cardColors(containerColor = Color(0xFFEBF1F6)),
+                                    shape = RoundedCornerShape(8.dp),
                                     modifier = Modifier.fillMaxWidth()
-                                )
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text(
-                                    text = "💡 访问 bigmodel.cn 免费领取，保存后本地持久化生效，无需重新打包 APK。",
-                                    fontSize = 11.sp,
-                                    color = Color(0xFF888888)
-                                )
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column {
+                                            Text("软件版本", fontSize = 12.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Medium, color = Color(0xFF1B3B5A))
+                                            Text("v${BuildConfig.VERSION_NAME}", fontSize = 11.sp, color = Color.Gray)
+                                        }
+
+                                        FilledTonalButton(
+                                            onClick = { vm.checkForUpdate(BuildConfig.VERSION_NAME) },
+                                            enabled = !uiState.isCheckingUpdate,
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                            modifier = Modifier.height(32.dp)
+                                        ) {
+                                            if (uiState.isCheckingUpdate) {
+                                                CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 2.dp)
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("检测中...", fontSize = 11.sp)
+                                            } else {
+                                                Icon(Icons.Default.Refresh, contentDescription = "检查更新", modifier = Modifier.size(13.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("检查更新", fontSize = 11.sp)
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         },
                         confirmButton = {
                             Button(
                                 onClick = {
-                                    vm.saveApiKey(tempKey)
+                                    vm.saveAiConfig(tempKey, tempBaseUrl, tempModel)
                                     vm.setSpeechRate(tempRate)
                                     voiceManager.setSpeechRate(tempRate)
-                                    Toast.makeText(context, "设置已保存并立即生效！", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "配置已保存并立即生效！", Toast.LENGTH_SHORT).show()
                                     showSettingsDialog = false
                                 }
                             ) {
@@ -455,7 +640,6 @@ fun SectionCardItem(
                     modifier = Modifier.weight(1f)
                 )
 
-                // 【新增特性 3】：每段卡片专属朗读按钮
                 FilledTonalButton(
                     onClick = onSpeakSection,
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
@@ -498,7 +682,7 @@ fun ChatBubbleItem(
         ) {
             Column(modifier = Modifier.padding(10.dp)) {
                 Text(
-                    text = if (isUser) "🙋 我问：" else "👨‍🏫 名师回答：",
+                    text = if (isUser) "🙋 我问：" else "👨‍🏫 导师回答：",
                     fontSize = 11.sp,
                     color = Color.Gray
                 )

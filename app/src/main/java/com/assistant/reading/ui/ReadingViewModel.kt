@@ -8,6 +8,8 @@ import com.assistant.reading.core.ai.AppSettingsManager
 import com.assistant.reading.core.ai.ChatMessage
 import com.assistant.reading.core.ai.ZhipuAiClient
 import com.assistant.reading.core.ocr.OcrManager
+import com.assistant.reading.core.update.UpdateInfo
+import com.assistant.reading.core.update.UpdateManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -34,19 +36,32 @@ data class ReadingUiState(
     val isLoading: Boolean = false,                      // 导读/AI 正在输出中
     val isChatLoading: Boolean = false,                  // 问答对话正在输出中
     val fontSizeSp: Int = 18,                            // 护眼字号大小
-    val speechRate: Float = 0.88f,                       // 朗读语速 (0.6x ~ 1.5x)
-    val isDetailedMode: Boolean = true                   // 逐句精讲/古文全译开关 (默认开启)
+    val speechRate: Float = 0.88f,                       // 朗读语速 (0.5x ~ 1.5x)
+    val isDetailedMode: Boolean = false,                 // 【需求 1】逐句精讲开关：默认关闭 (false)
+    val apiBaseUrl: String = AppSettingsManager.DEFAULT_BASE_URL,
+    val modelName: String = AppSettingsManager.DEFAULT_MODEL_NAME,
+    val isCheckingUpdate: Boolean = false,               // 是否正在检测更新
+    val updateInfo: UpdateInfo? = null,                  // 检测到的新版本详情
+    val updateMessage: String? = null                    // 更新提示 Toast 消息
 )
 
 class ReadingViewModel(application: Application) : AndroidViewModel(application) {
 
     private val ocrManager = OcrManager(application)
-    private val aiClient = ZhipuAiClient { AppSettingsManager.getApiKey(getApplication()) }
+
+    // 动态注入用户配置的 Key、Base URL 与 Model Name
+    private val aiClient = ZhipuAiClient(
+        apiKeyProvider = { AppSettingsManager.getApiKey(getApplication()) },
+        baseUrlProvider = { AppSettingsManager.getApiBaseUrl(getApplication()) },
+        modelNameProvider = { AppSettingsManager.getModelName(getApplication()) }
+    )
 
     private val _uiState = MutableStateFlow(
         ReadingUiState(
             speechRate = AppSettingsManager.getSpeechRate(application),
-            isDetailedMode = AppSettingsManager.isDetailedModeEnabled(application)
+            isDetailedMode = AppSettingsManager.isDetailedModeEnabled(application),
+            apiBaseUrl = AppSettingsManager.getApiBaseUrl(application),
+            modelName = AppSettingsManager.getModelName(application)
         )
     )
     val uiState: StateFlow<ReadingUiState> = _uiState.asStateFlow()
@@ -74,8 +89,53 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
         _uiState.value = _uiState.value.copy(isDetailedMode = enabled)
     }
 
-    fun saveApiKey(key: String) {
+    fun saveAiConfig(key: String, baseUrl: String, model: String) {
         AppSettingsManager.saveApiKey(getApplication(), key)
+        AppSettingsManager.saveApiBaseUrl(getApplication(), baseUrl)
+        AppSettingsManager.saveModelName(getApplication(), model)
+        _uiState.value = _uiState.value.copy(
+            apiBaseUrl = AppSettingsManager.getApiBaseUrl(getApplication()),
+            modelName = AppSettingsManager.getModelName(getApplication())
+        )
+    }
+
+    fun resetAiConfigToDefaults() {
+        AppSettingsManager.resetToDefaults(getApplication())
+        _uiState.value = _uiState.value.copy(
+            apiBaseUrl = AppSettingsManager.DEFAULT_BASE_URL,
+            modelName = AppSettingsManager.DEFAULT_MODEL_NAME
+        )
+    }
+
+    /**
+     * 手动检查 GitHub Release 新版本
+     */
+    fun checkForUpdate(currentVersion: String) {
+        if (_uiState.value.isCheckingUpdate) return
+        _uiState.value = _uiState.value.copy(isCheckingUpdate = true, updateMessage = null)
+        viewModelScope.launch {
+            val result = UpdateManager.checkUpdate(currentVersion)
+            result.onSuccess { info ->
+                _uiState.value = _uiState.value.copy(
+                    isCheckingUpdate = false,
+                    updateInfo = if (info.hasUpdate) info else null,
+                    updateMessage = if (!info.hasUpdate) "当前已是最新版本 (v$currentVersion)" else null
+                )
+            }.onFailure { error ->
+                _uiState.value = _uiState.value.copy(
+                    isCheckingUpdate = false,
+                    updateMessage = "检测更新失败：${error.localizedMessage ?: "网络异常"}"
+                )
+            }
+        }
+    }
+
+    fun dismissUpdateDialog() {
+        _uiState.value = _uiState.value.copy(updateInfo = null)
+    }
+
+    fun dismissUpdateMessage() {
+        _uiState.value = _uiState.value.copy(updateMessage = null)
     }
 
     fun getApiKey(): String = AppSettingsManager.getApiKey(getApplication())
@@ -99,7 +159,7 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
     }
 
     /**
-     * 启动五维全景导学 (支持流式更新与动态分段)
+     * 启动全景导学 (依据文本自适应深度)
      */
     fun startReadingAssistant(query: String = _uiState.value.inputText) {
         if (query.isBlank()) return
@@ -167,7 +227,7 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
                 apiMessages.add(
                     ChatMessage(
                         "system",
-                        "学生当前正在阅读的内容为：\n${_uiState.value.inputText.take(2000)}"
+                        "读者当前正在阅读的内容为：\n${_uiState.value.inputText.take(2000)}"
                     )
                 )
             }

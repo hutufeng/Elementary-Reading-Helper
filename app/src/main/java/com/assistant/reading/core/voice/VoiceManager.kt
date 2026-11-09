@@ -1,4 +1,4 @@
-﻿package com.assistant.reading.core.voice
+package com.assistant.reading.core.voice
 
 import android.content.Context
 import android.speech.tts.TextToSpeech

@@ -18,7 +18,11 @@ data class ChatMessage(
     val content: String
 )
 
-class ZhipuAiClient(private val apiKeyProvider: () -> String) {
+class ZhipuAiClient(
+    private val apiKeyProvider: () -> String,
+    private val baseUrlProvider: () -> String = { AppSettingsManager.DEFAULT_BASE_URL },
+    private val modelNameProvider: () -> String = { AppSettingsManager.DEFAULT_MODEL_NAME }
+) {
 
     constructor(staticApiKey: String) : this({ staticApiKey })
 
@@ -30,85 +34,77 @@ class ZhipuAiClient(private val apiKeyProvider: () -> String) {
     private val sseFactory = EventSources.createFactory(client)
 
     companion object {
+        // 自适应通识文学导师人设 (不限于中小学，依据文本自身特性自适应)
         const val TEACHER_SYSTEM_PROMPT = """
-            你是一位深耕中小学语文教学20年、说话通俗幽默的特级语文老师兼知心大朋友。
-            面向中小学生辅导阅读与写作：
-            1. 语气亲切温暖，多用比喻、生活场景和鼓励式语言，严禁使用晦涩死板的学术术语；
-            2. 回答简洁有条理，善于用“启发式”引导孩子思考，不仅给出解释，还要引导孩子举一反三；
-            3. 如果孩子针对短文追问（如字词用法、句子含义、人物心理），结合上下文通俗讲透；
-            4. 如果孩子询问写作技巧，提供具体、能直接模仿的小妙招和小例子。
+            你是一位学贯中西、深谙文学鉴赏与语文教学规律的资深阅读导师与知心伴读者。
+            请根据用户输入的具体课文、古诗文或阅读资料的内容特质与深浅层次，自适应调整你的导学深度与语言风格：
+            1. 面对启蒙与低幼童话：语言亲切灵动、充满童趣，重在启发阅读兴趣；
+            2. 面对基础教材与中小学课文：讲清中心思想推导、字词积累、修辞手法与写作借鉴；
+            3. 面对文言经典、古诗词赋：剖析字词句法、词类活用、时代历史背景与文化思想内核；
+            4. 面对严肃文学、散文小说与哲学经典：挖掘时代精神、象征隐喻、行文构思与人性深度。
+            态度温和鼓励，讲深讲透，多用启发式引导读者举一反三。
         """
 
         /**
-         * 构建全景深度导学提示词
-         * @param isDetailedMode 是否开启逐句精读/文言全译模式
+         * 构建自适应全景导学提示词
+         * @param isDetailedMode 是否开启逐句精讲与文白对照 (默认关闭，按需开启)
          */
         fun buildGuidePrompt(isDetailedMode: Boolean): String {
             val detailedSection = if (isDetailedMode) """
                 ---
-                ### 📜 零障碍逐句精讲与文白对照（全文逐句通透剖析）
-                （特别适用于文言文、古诗词及重点短文，帮助孩子彻底扫清陌生词句与理解障碍）：
+                ### 📜 零障碍逐句精讲与文白全景对照
+                （依据当前文本内容逐句拆解，特别适用于文言文、古诗词及深奥文本）：
                 请将文章从头到尾按句或按节进行逐一精讲：
                 - 【原文句子】：原汁原味句子
                 - 📖 【白话全译】：通俗生动的逐句现代文白话直译
-                - 🔍 【字词句微观解密】：详细指出本句中涉及的通假字、古今异义、生僻字拼音、词类活用或重点动词/形容词的语境含义
+                - 🔍 【字词句微观解密】：详细指出本句中涉及的通假字、古今异义、词类活用、生僻字拼音或核心动词/形容词的语境含义
             """.trimIndent() else ""
 
             return """
-                你是一位深耕中小学语文教学20年、深谙中考命题规律且说话通俗幽默的特级语文教师。
-                用户输入的内容可能是一段文字，也可能只是一个课文名或篇名（如“三年级上册第14课”、“美丽的小兴安岭”、“陈涉世家”、“陋室铭”等）。
-                请你自动识别并调出对应内容，严格按照以下体系为中小学生输出通俗透彻、详尽详实的导学内容：
+                你是一位学贯古今的专业阅读导读专家。用户输入的内容可能是一段文字，也可能是一个篇名或出处（如《美丽的小兴安岭》、《岳阳楼记》、《百年孤独》选段、《论语》等）。
+                请你自动识别并调出对应内容，依据文章自身的体裁（童话/散文/记叙文/文言文/古诗/小说/议论文）与深度，自适应输出通透、详实的导学内容：
 
                 $detailedSection
 
                 ---
-                ### 📖 一、 这篇文章究竟讲了什么？（通俗导读与时代背景）
-                - 用讲故事的大白话告诉孩子：当时发生了什么事？作者是在怎样的时代背景和个人处境下写的？彻底消除历史时代与生活隔阂，帮孩子建立深层情感共鸣。
+                ### 📖 一、 这篇作品究竟讲了什么？（全景导读与创作背景）
+                - 还原创作背景与时代风貌：作者是在怎样的历史时代与人生境遇下写下此文的？
+                - 宏观脉络梳理：文章的核心线索与情节推进逻辑。
 
                 ---
-                ### 🎯 二、 中心思想与概括秘籍（手把手教会推导）
-                1. 【中考标准满分中心思想】：规范答题句式（“本文通过记叙/描写……表现了……表达了作者对……之情”）。
-                2. 【名师手把手推导三步法】：详细写出：
-                   - 第1步抓什么事/对象 ➔
-                   - 第2步找文中的哪句关键文眼/主旨句 ➔
-                   - 第3步如何提炼情感与道理。
-                   （教给孩子推导逻辑，考试自己也能概括出来）。
+                ### 🎯 二、 中心思想与内核概括（手把手推导）
+                1. 【核心主旨标准概括】：规范、精准提炼文章所表达的核心思想感情、哲理或社会意义。
+                2. 【思维推导三步法】：从“抓主要事件/物象 ➔ 找关键主旨句/文眼 ➔ 提炼深层情感与哲理”，手把手呈现推导逻辑。
 
                 ---
-                ### ✨ 三、 重点字词与精彩句子全景清单（必须详尽列出，拒绝仅举例）
-                【重要要求】：请全面、详尽地一一列出文中的所有关键知识点，不要只挑1~2个词举例，要让孩子彻底掌握整篇文章的所有重点！
-                1. 📌 【生字词与通假虚词全景库】：
-                   - 一一列出文中的所有生字、多音字（附标准汉语拼音）。
-                   - 一一列出文中重点词语、成语解释。
-                   - （若是文言文/古诗）：详尽列出所有通假字、古今异义、词类活用及关键文言虚词（之、乎、者、也、以、于）。
+                ### ✨ 三、 核心字词句与全篇知识点清单（详尽归纳，拒绝仅举例）
+                【重要要求】：请全面、详尽地一一列出文中的核心知识点，不要只挑1~2个词举例！
+                1. 📌 【生字词、多音字与文言虚词全景库】：
+                   - 详尽列出文中的生字、多音字（附标准汉语拼音与语境释义）、重点成语。
+                   - （若是文言文/古诗词）：详尽整理所有通假字、古今异义、词类活用及关键文言虚词用法。
                 2. 🌟 【全文修辞与精妙句式全景透视】：
-                   - 详尽列出文中运用了比喻、拟人、排比、对偶、夸张、借代、反问等修辞的所有精彩句子。
-                   - 标明句子位置，并用大白话逐句品析：作者把什么比作什么、闭上眼睛脑海里呈现了什么绝妙画面。
+                   - 详尽指出全文所运用的修辞手法（比喻、拟人、排比、对偶、借代、反问等）的具体句子与位置。
+                   - 逐句品析：表达了怎样的情境，闭上眼睛呈现出怎样生动的画面。
 
                 ---
-                ### 💡 四、 表达方法与写作手法全说透
-                1. 【表达方式剖析】：点破文中的叙事、描写（人物肖像/动作/心理/环境）、抒情或议论是怎样配合推进的。
-                2. 【表现手法说透】：用大白话彻底讲透文中所用的表现手法（如借景抒情、欲扬先抑、动静结合、托物言志、伏笔铺垫、虚实结合等），讲清楚作者为什么要用这个手法，达到怎样的震撼效果。
+                ### 💡 四、 表达方法与构思艺术深度说透
+                1. 【表达方式配合】：剖析叙事、描写（人物/景物/细节）、抒情、议论之间的巧妙配合与转换。
+                2. 【表现手法说透】：讲透文中所用的表现手法（如借景抒情、托物言志、欲扬先抑、动静结合、虚实相生、对比衬托、象征隐喻等），讲清作者为什么要这样写、达到怎样的艺术效果。
 
                 ---
-                ### ✍️ 五、 直接借鉴写作锦囊 & 全套必考点
-                1. 🖋️ 【直接搬进作文的锦囊】：
-                   - 黄金开头/结尾构思模式（考试写作文怎么套用）。
-                   - 佳句仿写积木（给出句式结构，并手把手示范一个贴近校园或家庭生活的仿写例子）。
-                   - 作文素材存钱罐（指出本文素材适合写哪些常考作文题目）。
-                2. 📋 【中考/期末高频必考大题直击】：
-                   - 详尽提炼本文最容易考的 2~3 道阅读真题（词句赏析题、作用题、主旨探究题）。
-                   - 提供阅卷老师认可的满分采分点与答题公式。
+                ### ✍️ 五、 直接借鉴写作锦囊 & 思考考点
+                1. 🖋️ 【直接搬进写作的锦囊】：
+                   - 黄金开头/结尾构思模式（在实际写作中如何借鉴套用）。
+                   - 佳句仿写积木（给出句式结构，并给出一个贴近现实生活的模仿范例）。
+                   - 写作素材存钱罐（指出本文素材适合用于哪些常考或经典写作主题中）。
+                2. 📋 【深度理解与考点思考题】：
+                   - 提炼本文最值得深思的 2~3 道经典问题（词句理解、段落作用、主旨探究）。
+                   - 提供规范的答题思路与采分要点。
             """.trimIndent()
         }
     }
 
-    /**
-     * 全景深度导读流式调用
-     * @param content 短文内容或课文名
-     * @param isDetailedMode 是否开启逐句精读/文言全译模式
-     */
-    fun streamAsk(content: String, isDetailedMode: Boolean = true): Flow<String> {
+    fun streamAsk(content: String, isDetailedMode: Boolean = false): Flow<String> {
         val messages = listOf(
             ChatMessage("system", buildGuidePrompt(isDetailedMode)),
             ChatMessage("user", content)
@@ -117,15 +113,23 @@ class ZhipuAiClient(private val apiKeyProvider: () -> String) {
     }
 
     /**
-     * 自由多轮 AI 对话与问答流式调用
+     * 通用 OpenAI 兼容协议流式调用 (支持自定义 Base URL 与 Model)
      */
     fun streamChat(messages: List<ChatMessage>): Flow<String> = callbackFlow {
         val key = apiKeyProvider()
         if (key.isBlank()) {
-            trySend("⚠️ 提示：您尚未配置 API Key。请点击右上角【设置 (⚙️)】按钮填入免费领取的智谱 API Key 即可使用！")
+            trySend("⚠️ 提示：您尚未配置 API Key。请点击右上角【设置 (⚙️)】按钮填入 API Key 即可使用！")
             close()
             return@callbackFlow
         }
+
+        val rawBaseUrl = baseUrlProvider().trim().trimEnd('/')
+        val endpoint = if (rawBaseUrl.endsWith("/chat/completions")) {
+            rawBaseUrl
+        } else {
+            "$rawBaseUrl/chat/completions"
+        }
+        val currentModel = modelNameProvider().ifBlank { AppSettingsManager.DEFAULT_MODEL_NAME }
 
         val jsonMessages = JSONArray()
         for (msg in messages) {
@@ -136,13 +140,13 @@ class ZhipuAiClient(private val apiKeyProvider: () -> String) {
         }
 
         val requestBodyJson = JSONObject().apply {
-            put("model", "glm-4-flash")
+            put("model", currentModel)
             put("stream", true)
             put("messages", jsonMessages)
         }
 
         val request = Request.Builder()
-            .url("https://open.bigmodel.cn/api/paas/v4/chat/completions")
+            .url(endpoint)
             .addHeader("Authorization", "Bearer $key")
             .addHeader("Content-Type", "application/json")
             .post(requestBodyJson.toString().toRequestBody("application/json".toMediaType()))
@@ -162,6 +166,12 @@ class ZhipuAiClient(private val apiKeyProvider: () -> String) {
             }
 
             override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
+                val errorMsg = when (response?.code) {
+                    401 -> "认证失败 (401)：请检查您的 API Key 是否正确填写。"
+                    404 -> "接口地址错误 (404)：请检查自定义 Base URL 路径是否正确。"
+                    else -> t?.localizedMessage ?: "网络请求发生异常"
+                }
+                trySend("\n\n❌ 请求出错：$errorMsg")
                 close(t)
             }
         })
