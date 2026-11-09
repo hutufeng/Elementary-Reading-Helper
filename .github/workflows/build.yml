@@ -30,16 +30,17 @@ jobs:
         java-version: '17'
         cache: 'gradle'
 
-    - name: 补全 Gradle Wrapper
-      run: gradle wrapper
-
-    - name: 赋予 Gradle 执行权限
-      run: chmod +x gradlew
+    - name: 生成兼容的 Gradle 8.4 Wrapper 并切换至高速 CDN 镜像
+      run: |
+        # 1. 生成 8.4 wrapper 避免 Ubuntu 默认的 9.x 引起版本不兼容
+        gradle wrapper --gradle-version 8.4 --distribution-type bin
+        # 2. 切换官方源至 JetBrains 全球高速 CDN，彻底规避 services.gradle.org 504 超时
+        sed -i 's|https\\://services.gradle.org|https\\://cache-redirector.jetbrains.com/services.gradle.org|g' gradle/wrapper/gradle-wrapper.properties
+        chmod +x gradlew
 
     - name: 执行编译 (分配 4GB 内存)
       env:
         ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
-        JAVA_OPTS: "-Xmx4096m -XX:MaxMetaspaceSize=1024m"
         GRADLE_OPTS: "-Dorg.gradle.jvmargs='-Xmx4096m -XX:MaxMetaspaceSize=1024m' -Dorg.gradle.daemon=false"
       run: |
         BUILD_TYPE="${{ inputs.build_type || 'debug' }}"
