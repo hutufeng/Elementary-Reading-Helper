@@ -33,6 +33,7 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var voiceManager: VoiceManager
 
+    @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         voiceManager = VoiceManager(this)
