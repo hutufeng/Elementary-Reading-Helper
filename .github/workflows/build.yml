@@ -30,21 +30,22 @@ jobs:
         java-version: '17'
         cache: 'gradle'
 
-    - name: 赋予 Gradle 执行权限
-      run: chmod +x gradlew
+    - name: 规范化脚本换行符与权限
+      run: |
+        sed -i -e 's/\r$//' gradlew
+        chmod +x gradlew
 
-    - name: 执行编译 (分配 4GB 内存)
+    - name: 执行编译打包 (读取 gradle.properties 4GB 内存配置)
       env:
         ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
-        GRADLE_OPTS: "-Dorg.gradle.jvmargs='-Xmx4096m -XX:MaxMetaspaceSize=1024m' -Dorg.gradle.daemon=false"
       run: |
         BUILD_TYPE="${{ inputs.build_type || 'debug' }}"
         if [ "$BUILD_TYPE" = "release" ]; then
           echo ">>> 正在执行 Release 编译..."
-          ./gradlew assembleRelease --no-daemon -Dorg.gradle.jvmargs="-Xmx4096m -XX:MaxMetaspaceSize=1024m" --stacktrace
+          ./gradlew assembleRelease --stacktrace
         else
           echo ">>> 正在执行 Debug 编译..."
-          ./gradlew assembleDebug --no-daemon -Dorg.gradle.jvmargs="-Xmx4096m -XX:MaxMetaspaceSize=1024m" --stacktrace
+          ./gradlew assembleDebug --stacktrace
         fi
 
     - name: 归档并上传生成的 APK 安装包
