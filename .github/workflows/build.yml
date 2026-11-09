@@ -42,10 +42,10 @@ jobs:
         BUILD_TYPE="${{ inputs.build_type || 'debug' }}"
         if [ "$BUILD_TYPE" = "release" ]; then
           echo ">>> 正在执行 Release 编译..."
-          ./gradlew assembleRelease --stacktrace
+          ./gradlew assembleRelease --no-daemon --stacktrace
         else
           echo ">>> 正在执行 Debug 编译..."
-          ./gradlew assembleDebug --stacktrace
+          ./gradlew assembleDebug --no-daemon --stacktrace
         fi
 
     - name: 归档并上传生成的 APK 安装包
