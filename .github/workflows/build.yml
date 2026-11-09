@@ -1,4 +1,4 @@
-﻿name: Android 手动与自动编译流水线
+name: Android 手动与自动编译流水线
 
 on:
   workflow_dispatch:
@@ -28,25 +28,30 @@ jobs:
       with:
         distribution: 'temurin'
         java-version: '17'
-        cache: 'gradle'
 
-    - name: 授予 Gradle 执行权限
-      run: chmod +x gradlew || true
+    - name: 配置 Gradle 8.4 环境与依赖缓存
+      uses: gradle/actions/setup-gradle@v3
+      with:
+        gradle-version: '8.4'
 
-    - name: 补全 Gradle Wrapper
-      run: gradle wrapper
+    - name: 确保 Gradle Wrapper 兼容
+      run: gradle wrapper --gradle-version 8.4 --distribution-type bin
 
-    - name: 执行编译 (根据选择动态打包)
+    - name: 赋予 Gradle 执行权限
+      run: chmod +x gradlew
+
+    - name: 执行编译 (分配 4GB JVM 堆内存)
       env:
         ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+        GRADLE_OPTS: "-Dorg.gradle.jvmargs='-Xmx4096m -XX:MaxMetaspaceSize=1024m'"
       run: |
         BUILD_TYPE="${{ inputs.build_type || 'debug' }}"
         if [ "$BUILD_TYPE" = "release" ]; then
           echo ">>> 正在执行 Release 编译..."
-          ./gradlew assembleRelease --stacktrace
+          ./gradlew assembleRelease --no-daemon -Dorg.gradle.jvmargs="-Xmx4096m -XX:MaxMetaspaceSize=1024m" --stacktrace
         else
           echo ">>> 正在执行 Debug 编译..."
-          ./gradlew assembleDebug --stacktrace
+          ./gradlew assembleDebug --no-daemon -Dorg.gradle.jvmargs="-Xmx4096m -XX:MaxMetaspaceSize=1024m" --stacktrace
         fi
 
     - name: 归档并上传生成的 APK 安装包
