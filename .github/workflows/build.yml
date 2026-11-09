@@ -1,22 +1,23 @@
-name: Android 手动与自动编译流水线
+name: 手动编译并发布 Release
 
 on:
   workflow_dispatch:
     inputs:
-      build_type:
-        description: '请选择打包类型'
+      version:
+        description: '发布版本号 (如 v1.0.0)'
         required: true
-        default: 'debug'
-        type: choice
-        options:
-        - debug
-        - release
-  push:
-    branches: [ "main" ]
+        default: 'v1.0.0'
+      release_notes:
+        description: '本次发布说明'
+        required: false
+        default: "1. 课名/篇名自然语言直达 (免死板索引)\n2. 五维名师深度导学 (主旨推导、词句标出、写法说透、作文借鉴)\n3. 自由多轮名师互动问答室\n4. 离线标准普通话慢速伴读朗读"
+
+permissions:
+  contents: write
 
 jobs:
-  build:
-    name: 编译 Android APK (${{ inputs.build_type || 'debug' }})
+  build_and_release:
+    name: 编译 APK 并发布 Release (${{ inputs.version }})
     runs-on: ubuntu-latest
 
     steps:
@@ -35,22 +36,41 @@ jobs:
         sed -i -e 's/\r$//' gradlew
         chmod +x gradlew
 
-    - name: 执行编译打包 (读取 gradle.properties 4GB 内存配置)
+    - name: 执行编译打包
       env:
         ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
       run: |
-        BUILD_TYPE="${{ inputs.build_type || 'debug' }}"
-        if [ "$BUILD_TYPE" = "release" ]; then
-          echo ">>> 正在执行 Release 编译..."
-          ./gradlew assembleRelease --no-daemon --stacktrace
-        else
-          echo ">>> 正在执行 Debug 编译..."
-          ./gradlew assembleDebug --no-daemon --stacktrace
-        fi
+        echo ">>> 开始编译 APK..."
+        ./gradlew assembleDebug --no-daemon --stacktrace
 
-    - name: 归档并上传生成的 APK 安装包
+    - name: 规整并重命名 APK 产物
+      run: |
+        mkdir -p release_apks
+        cp app/build/outputs/apk/debug/*.apk release_apks/StudentReadingAssistant-${{ inputs.version }}.apk
+
+    - name: 上传构建产物 (Artifacts 归档备份)
       uses: actions/upload-artifact@v4
       with:
-        name: student-reading-apk-${{ inputs.build_type || 'debug' }}
-        path: app/build/outputs/apk/**/*.apk
+        name: StudentReadingAssistant-${{ inputs.version }}
+        path: release_apks/*.apk
         retention-days: 7
+
+    - name: 自动创建 GitHub Release 并挂载 APK
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ inputs.version }}
+        name: "中小学阅读伴读小助手 ${{ inputs.version }}"
+        body: |
+          ## 📖 中小学名师阅读与写作小助手正式发布
+          **版本号**: `${{ inputs.version }}`
+
+          ### 🌟 本次版本核心特性：
+          ${{ inputs.release_notes }}
+
+          ---
+          ### 📱 下载与安装说明：
+          1. 直接点击下方 **Assets** 列表中的 `StudentReadingAssistant-${{ inputs.version }}.apk` 进行下载；
+          2. 将安装包传输至安卓手机，点击即可直接安装体验！
+        files: release_apks/*.apk
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
