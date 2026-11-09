@@ -213,7 +213,7 @@ class MainActivity : ComponentActivity() {
                         OutlinedTextField(
                             value = uiState.inputText,
                             onValueChange = { vm.updateInputText(it) },
-                            placeholder = { Text("输入篇名（如：古诗、文言文、课文或任意经典名篇）或直接粘贴长短文...") },
+                            placeholder = { Text("输入篇名、课本年级课号（如：小学三年级上册第十课、小石潭记、背影）或直接粘贴长短文...") },
                             modifier = Modifier.fillMaxWidth().height(110.dp),
                             textStyle = LocalTextStyle.current.copy(fontSize = uiState.fontSizeSp.sp)
                         )

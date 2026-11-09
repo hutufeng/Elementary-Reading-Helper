@@ -15,12 +15,15 @@ android {
     namespace = "com.assistant.reading"
     compileSdk = 34
 
+    val vCode = (project.findProperty("versionCode") as? String)?.toIntOrNull() ?: 1
+    val vName = (project.findProperty("versionName") as? String) ?: "1.0.0"
+
     defaultConfig {
         applicationId = "com.assistant.reading"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = vCode
+        versionName = vName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -31,10 +34,25 @@ android {
         buildConfigField("String", "ZHIPU_API_KEY", "\"$apiKey\"")
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = file("release.keystore")
+            storePassword = "reading123"
+            keyAlias = "readingkey"
+            keyPassword = "reading123"
+            enableV1Signing = true
+            enableV2Signing = true
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+        debug {
+            signingConfig = signingConfigs.getByName("release")
         }
     }
     compileOptions {
