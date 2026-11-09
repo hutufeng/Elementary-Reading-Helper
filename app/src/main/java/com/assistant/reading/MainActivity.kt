@@ -171,12 +171,16 @@ class MainActivity : ComponentActivity() {
                         ) {
                             FilledTonalButton(
                                 onClick = {
-                                    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                                        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                                        putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.CHINESE.toString())
-                                        putExtra(RecognizerIntent.EXTRA_PROMPT, "说出想读的课文名、名篇或短文...")
+                                    try {
+                                        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                                            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                                            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.CHINESE.toString())
+                                            putExtra(RecognizerIntent.EXTRA_PROMPT, "说出想读的课文名、名篇或短文...")
+                                        }
+                                        speechLauncher.launch(intent)
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, "未找到系统语音识别服务，您可直接打字或使用输入法自带语音输入", Toast.LENGTH_LONG).show()
                                     }
-                                    speechLauncher.launch(intent)
                                 }
                             ) {
                                 Icon(Icons.Default.Mic, null, modifier = Modifier.size(16.dp))
@@ -358,12 +362,16 @@ class MainActivity : ComponentActivity() {
 
                                     IconButton(
                                         onClick = {
-                                            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                                                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                                                putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.CHINESE.toString())
-                                                putExtra(RecognizerIntent.EXTRA_PROMPT, "说出你的问题...")
+                                            try {
+                                                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                                                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                                                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.CHINESE.toString())
+                                                    putExtra(RecognizerIntent.EXTRA_PROMPT, "说出你的问题...")
+                                                }
+                                                questionSpeechLauncher.launch(intent)
+                                            } catch (e: Exception) {
+                                                Toast.makeText(context, "未找到系统语音识别服务，您可直接打字或使用输入法自带语音提问", Toast.LENGTH_LONG).show()
                                             }
-                                            questionSpeechLauncher.launch(intent)
                                         }
                                     ) {
                                         Icon(Icons.Default.Mic, contentDescription = "语音提问")
