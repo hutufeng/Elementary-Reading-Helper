@@ -4,8 +4,7 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.assistant.reading.BuildConfig
-import com.assistant.reading.core.ai.ApiKeyManager
+import com.assistant.reading.core.ai.AppSettingsManager
 import com.assistant.reading.core.ai.ChatMessage
 import com.assistant.reading.core.ai.ZhipuAiClient
 import com.assistant.reading.core.ocr.OcrManager
@@ -20,31 +19,37 @@ data class UiChatMessage(
     val content: String
 )
 
+data class ReadingSection(
+    val id: Int,
+    val title: String,
+    val content: String
+)
+
 data class ReadingUiState(
-    val inputText: String = "",               // 课文/短文输入框内容
-    val readingResult: String = "",            // 五维导学解析结果
-    val chatQuestion: String = "",            // 自由问答提问框内容
-    val chatHistory: List<UiChatMessage> = emptyList(), // 多轮互动对话历史
-    val isLoading: Boolean = false,            // 导读/AI 正在输出中
-    val isChatLoading: Boolean = false,        // 问答对话正在输出中
-    val fontSizeSp: Int = 18                   // 护眼字号大小
+    val inputText: String = "",                         // 课文/短文输入框内容
+    val readingResult: String = "",                      // 五维导学原始结果
+    val sections: List<ReadingSection> = emptyList(),    // 按章节/段落拆分的结构化列表 (支持分段点读)
+    val chatQuestion: String = "",                      // 自由问答提问框内容
+    val chatHistory: List<UiChatMessage> = emptyList(),   // 多轮互动对话历史
+    val isLoading: Boolean = false,                      // 导读/AI 正在输出中
+    val isChatLoading: Boolean = false,                  // 问答对话正在输出中
+    val fontSizeSp: Int = 18,                            // 护眼字号大小
+    val speechRate: Float = 0.88f,                       // 朗读语速 (0.6x ~ 1.5x)
+    val isDetailedMode: Boolean = true                   // 逐句精讲/古文全译开关 (默认开启)
 )
 
 class ReadingViewModel(application: Application) : AndroidViewModel(application) {
 
     private val ocrManager = OcrManager(application)
-    private val aiClient = ZhipuAiClient { ApiKeyManager.getApiKey(getApplication()) }
+    private val aiClient = ZhipuAiClient { AppSettingsManager.getApiKey(getApplication()) }
 
-    private val _uiState = MutableStateFlow(ReadingUiState())
+    private val _uiState = MutableStateFlow(
+        ReadingUiState(
+            speechRate = AppSettingsManager.getSpeechRate(application),
+            isDetailedMode = AppSettingsManager.isDetailedModeEnabled(application)
+        )
+    )
     val uiState: StateFlow<ReadingUiState> = _uiState.asStateFlow()
-
-    fun saveApiKey(key: String) {
-        ApiKeyManager.saveApiKey(getApplication(), key)
-    }
-
-    fun getApiKey(): String = ApiKeyManager.getApiKey(getApplication())
-
-    fun isKeyConfigured(): Boolean = ApiKeyManager.isKeyConfigured(getApplication())
 
     fun updateInputText(text: String) {
         _uiState.value = _uiState.value.copy(inputText = text)
@@ -59,6 +64,24 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
         _uiState.value = _uiState.value.copy(fontSizeSp = newSize)
     }
 
+    fun setSpeechRate(rate: Float) {
+        AppSettingsManager.saveSpeechRate(getApplication(), rate)
+        _uiState.value = _uiState.value.copy(speechRate = rate)
+    }
+
+    fun toggleDetailedMode(enabled: Boolean) {
+        AppSettingsManager.saveDetailedModeEnabled(getApplication(), enabled)
+        _uiState.value = _uiState.value.copy(isDetailedMode = enabled)
+    }
+
+    fun saveApiKey(key: String) {
+        AppSettingsManager.saveApiKey(getApplication(), key)
+    }
+
+    fun getApiKey(): String = AppSettingsManager.getApiKey(getApplication())
+
+    fun isKeyConfigured(): Boolean = AppSettingsManager.isKeyConfigured(getApplication())
+
     /**
      * 拍照识别后自动开始深度导读
      */
@@ -69,26 +92,30 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
                 val extracted = ocrManager.recognizeTextFromUri(uri)
                 _uiState.value = _uiState.value.copy(inputText = extracted)
                 startReadingAssistant(extracted)
-            } catch (_: Exception) {
+            } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(isLoading = false)
             }
         }
     }
 
     /**
-     * 启动五维深度导学
+     * 启动五维全景导学 (支持流式更新与动态分段)
      */
     fun startReadingAssistant(query: String = _uiState.value.inputText) {
         if (query.isBlank()) return
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(
                 isLoading = true,
-                readingResult = ""
+                readingResult = "",
+                sections = emptyList()
             )
 
-            aiClient.streamAsk(query).collect { chunk ->
+            var accumulated = ""
+            aiClient.streamAsk(query, isDetailedMode = _uiState.value.isDetailedMode).collect { chunk ->
+                accumulated += chunk
                 _uiState.value = _uiState.value.copy(
-                    readingResult = _uiState.value.readingResult + chunk
+                    readingResult = accumulated,
+                    sections = parseSections(accumulated)
                 )
             }
             _uiState.value = _uiState.value.copy(isLoading = false)
@@ -96,7 +123,30 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
     }
 
     /**
-     * 自由 AI 互动问答：支持基于当前短文深度追问，也支持独立自由提问
+     * 将 Markdown 智能解析为段落卡片 (供每段独立点读)
+     */
+    private fun parseSections(markdown: String): List<ReadingSection> {
+        if (markdown.isBlank()) return emptyList()
+        val parts = markdown.split(Regex("(?=### )"))
+        var index = 0
+        return parts.mapNotNull { part ->
+            val trimmed = part.trim()
+            if (trimmed.isBlank() || trimmed == "---") null
+            else {
+                val lines = trimmed.lines()
+                val firstLine = lines.firstOrNull()?.replace("#", "")?.trim() ?: "导读精要"
+                val body = lines.drop(1).joinToString("\n").trim()
+                ReadingSection(
+                    id = index++,
+                    title = firstLine,
+                    content = if (body.isBlank()) trimmed else body
+                )
+            }
+        }
+    }
+
+    /**
+     * 自由 AI 互动问答
      */
     fun sendChatQuestion(questionText: String = _uiState.value.chatQuestion) {
         if (questionText.isBlank()) return
@@ -110,21 +160,18 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
         )
 
         viewModelScope.launch {
-            // 组装带上下文的消息链
             val apiMessages = mutableListOf<ChatMessage>()
             apiMessages.add(ChatMessage("system", ZhipuAiClient.TEACHER_SYSTEM_PROMPT))
 
-            // 如果当前有正在阅读的短文或课文，作为上下文注入，便于针对性追问
             if (_uiState.value.inputText.isNotBlank()) {
                 apiMessages.add(
                     ChatMessage(
                         "system",
-                        "学生当前正在阅读的课文/资料背景内容为：\n${_uiState.value.inputText.take(2000)}"
+                        "学生当前正在阅读的内容为：\n${_uiState.value.inputText.take(2000)}"
                     )
                 )
             }
 
-            // 附加最近的对话历史 (保留最近 6 条，保证流畅且不超出限制)
             val recentHistory = currentHistory.takeLast(6)
             for (msg in recentHistory) {
                 apiMessages.add(
@@ -135,7 +182,6 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
                 )
             }
 
-            // 先占位一个空的 assistant 回复消息用于流式追加
             val aiMessage = UiChatMessage(isUser = false, content = "")
             _uiState.value = _uiState.value.copy(
                 chatHistory = _uiState.value.chatHistory + aiMessage

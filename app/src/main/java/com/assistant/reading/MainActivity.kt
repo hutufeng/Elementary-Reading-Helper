@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.assistant.reading.core.voice.VoiceManager
+import com.assistant.reading.ui.ReadingSection
 import com.assistant.reading.ui.ReadingViewModel
 import com.assistant.reading.ui.UiChatMessage
 import java.util.Locale
@@ -48,6 +49,11 @@ class MainActivity : ComponentActivity() {
                 val uiState by vm.uiState.collectAsState()
                 val context = LocalContext.current
                 var showSettingsDialog by remember { mutableStateOf(false) }
+
+                // 同步当前语速到 VoiceManager
+                LaunchedEffect(uiState.speechRate) {
+                    voiceManager.setSpeechRate(uiState.speechRate)
+                }
 
                 // 图片选择 / 拍照
                 val imgPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
@@ -83,7 +89,7 @@ class MainActivity : ComponentActivity() {
                                 IconButton(onClick = { vm.changeFontSize(-2) }) { Text("A-") }
                                 IconButton(onClick = { vm.changeFontSize(2) }) { Text("A+") }
                                 IconButton(onClick = { showSettingsDialog = true }) {
-                                    Icon(Icons.Default.Settings, contentDescription = "AI 设置")
+                                    Icon(Icons.Default.Settings, contentDescription = "设置")
                                 }
                             }
                         )
@@ -132,7 +138,7 @@ class MainActivity : ComponentActivity() {
                             ) {
                                 Icon(Icons.Default.VolumeUp, null, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text("听朗读")
+                                Text("朗读全文")
                             }
 
                             IconButton(onClick = { voiceManager.stopSpeaking() }) {
@@ -146,10 +152,31 @@ class MainActivity : ComponentActivity() {
                         OutlinedTextField(
                             value = uiState.inputText,
                             onValueChange = { vm.updateInputText(it) },
-                            placeholder = { Text("输入篇名（如：3年级上册14课、小兴安岭、秋天的怀念）或粘贴文章...") },
+                            placeholder = { Text("输入篇名（如：3年级上册14课、古诗、文言文、小兴安岭）或粘贴文本...") },
                             modifier = Modifier.fillMaxWidth().height(110.dp),
                             textStyle = LocalTextStyle.current.copy(fontSize = uiState.fontSizeSp.sp)
                         )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // 【新增特性 1】：全文逐句精讲与文白对照开关
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Switch(
+                                    checked = uiState.isDetailedMode,
+                                    onCheckedChange = { vm.toggleDetailedMode(it) }
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text("📜 开启全文逐句精讲与文白对照", fontSize = 13.sp, color = Color(0xFF2C3E50))
+                                    Text("特别适合文言文、古诗词及深奥文本逐句通透解密", fontSize = 10.sp, color = Color.Gray)
+                                }
+                            }
+                        }
 
                         Spacer(modifier = Modifier.height(8.dp))
 
@@ -167,7 +194,7 @@ class MainActivity : ComponentActivity() {
                         ) {
                             Icon(Icons.Default.AutoStories, null)
                             Spacer(Modifier.width(8.dp))
-                            Text("开始名师五维全景导读", fontSize = 16.sp)
+                            Text("开始名师全景深度导读", fontSize = 16.sp)
                         }
 
                         if (uiState.isLoading) {
@@ -175,8 +202,24 @@ class MainActivity : ComponentActivity() {
                             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                         }
 
-                        // 3. 五维全景导学结果卡片
-                        if (uiState.readingResult.isNotBlank()) {
+                        // 【新增特性 3】：全景导学按段落/章节拆分卡片，每段附带独立朗读功能
+                        if (uiState.sections.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(14.dp))
+                            Text("🎯 名师全景深度导学与全套知识点：", style = MaterialTheme.typography.titleMedium, color = Color(0xFF1B3B5A))
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            uiState.sections.forEach { section ->
+                                SectionCardItem(
+                                    section = section,
+                                    fontSizeSp = uiState.fontSizeSp,
+                                    onSpeakSection = {
+                                        voiceManager.speak("${section.title}。\n${section.content}")
+                                    }
+                                )
+                                Spacer(modifier = Modifier.height(10.dp))
+                            }
+                        } else if (uiState.readingResult.isNotBlank()) {
+                            // 备用单卡片显示
                             Spacer(modifier = Modifier.height(14.dp))
                             Card(
                                 modifier = Modifier.fillMaxWidth(),
@@ -184,8 +227,6 @@ class MainActivity : ComponentActivity() {
                                 elevation = CardDefaults.cardElevation(2.dp)
                             ) {
                                 Column(modifier = Modifier.padding(16.dp)) {
-                                    Text("🎯 名师深度导读与写作锦囊：", style = MaterialTheme.typography.titleMedium, color = Color(0xFF1B3B5A))
-                                    Divider(modifier = Modifier.padding(vertical = 8.dp))
                                     Text(
                                         text = uiState.readingResult,
                                         fontSize = uiState.fontSizeSp.sp,
@@ -196,7 +237,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(20.dp))
+                        Spacer(modifier = Modifier.height(18.dp))
 
                         // 4. 自由 AI 互动问答室 (随问随答)
                         Card(
@@ -287,23 +328,50 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // 5. 【新增】AI 模型与 API Key 设置对话框
+                // 5. 【增强型】设置对话框：API Key + 朗读语速精细调节
                 if (showSettingsDialog) {
                     var tempKey by remember { mutableStateOf(vm.getApiKey()) }
+                    var tempRate by remember { mutableStateOf(uiState.speechRate) }
                     var isPasswordVisible by remember { mutableStateOf(false) }
 
                     AlertDialog(
                         onDismissRequest = { showSettingsDialog = false },
-                        title = { Text("⚙️ AI 模型服务设置", fontSize = 18.sp, color = Color(0xFF1B3B5A)) },
+                        title = { Text("⚙️ 伴学与朗读设置", fontSize = 18.sp, color = Color(0xFF1B3B5A)) },
                         text = {
                             Column {
+                                // 语速设置区域
                                 Text(
-                                    text = "本应用默认使用 智谱 GLM-4-Flash 大模型，官方永久免费调用。\n请在下方粘贴您领取的免费 API Key：",
-                                    fontSize = 13.sp,
-                                    lineHeight = 18.sp,
-                                    color = Color(0xFF444444)
+                                    text = "🔊 朗读语速调节 (当前: ${"%.2f".format(tempRate)}x)",
+                                    fontSize = 14.sp,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = Color(0xFF333333)
                                 )
-                                Spacer(modifier = Modifier.height(10.dp))
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Slider(
+                                    value = tempRate,
+                                    onValueChange = { tempRate = it },
+                                    valueRange = 0.5f..1.5f,
+                                    steps = 9
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    TextButton(onClick = { tempRate = 0.65f }) { Text("0.65x 慢速拼读", fontSize = 10.sp) }
+                                    TextButton(onClick = { tempRate = 0.88f }) { Text("0.88x 标准伴读", fontSize = 10.sp) }
+                                    TextButton(onClick = { tempRate = 1.15f }) { Text("1.15x 快速复习", fontSize = 10.sp) }
+                                }
+
+                                Divider(modifier = Modifier.padding(vertical = 10.dp))
+
+                                // API Key 设置区域
+                                Text(
+                                    text = "🔑 智谱 AI 密钥 (官方 GLM-4-Flash 永久免费)",
+                                    fontSize = 14.sp,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = Color(0xFF333333)
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
                                 OutlinedTextField(
                                     value = tempKey,
                                     onValueChange = { tempKey = it },
@@ -321,9 +389,9 @@ class MainActivity : ComponentActivity() {
                                     },
                                     modifier = Modifier.fillMaxWidth()
                                 )
-                                Spacer(modifier = Modifier.height(8.dp))
+                                Spacer(modifier = Modifier.height(6.dp))
                                 Text(
-                                    text = "💡 提示：访问 bigmodel.cn 即可免费领取；保存后本地持久化生效，无需重新打包 APK。",
+                                    text = "💡 访问 bigmodel.cn 免费领取，保存后本地持久化生效，无需重新打包 APK。",
                                     fontSize = 11.sp,
                                     color = Color(0xFF888888)
                                 )
@@ -333,7 +401,9 @@ class MainActivity : ComponentActivity() {
                             Button(
                                 onClick = {
                                     vm.saveApiKey(tempKey)
-                                    Toast.makeText(context, "API Key 保存成功，已立即生效！", Toast.LENGTH_SHORT).show()
+                                    vm.setSpeechRate(tempRate)
+                                    voiceManager.setSpeechRate(tempRate)
+                                    Toast.makeText(context, "设置已保存并立即生效！", Toast.LENGTH_SHORT).show()
                                     showSettingsDialog = false
                                 }
                             ) {
@@ -354,6 +424,58 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         voiceManager.destroy()
+    }
+}
+
+/**
+ * 分段/章节导读卡片 (带专属独立朗读按钮)
+ */
+@Composable
+fun SectionCardItem(
+    section: ReadingSection,
+    fontSizeSp: Int,
+    onSpeakSection: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(2.dp)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = section.title,
+                    fontSize = (fontSizeSp + 1).sp,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color(0xFF1B3B5A),
+                    modifier = Modifier.weight(1f)
+                )
+
+                // 【新增特性 3】：每段卡片专属朗读按钮
+                FilledTonalButton(
+                    onClick = onSpeakSection,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                    modifier = Modifier.height(34.dp)
+                ) {
+                    Icon(Icons.Default.VolumeUp, contentDescription = "朗读此段", modifier = Modifier.size(15.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("听此段", fontSize = 12.sp)
+                }
+            }
+
+            Divider(modifier = Modifier.padding(vertical = 8.dp))
+
+            Text(
+                text = section.content,
+                fontSize = fontSizeSp.sp,
+                lineHeight = (fontSizeSp + 8).sp,
+                color = Color(0xFF2D2D2D)
+            )
+        }
     }
 }
 
