@@ -243,7 +243,7 @@ fun MathSolverScreen(
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                         modifier = Modifier.height(36.dp)
                     ) {
-                        Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.PhotoCamera, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(if (selectedImageUri == null) "拍题/传原图" else "重选原图", fontSize = 12.sp)
                     }
@@ -280,7 +280,7 @@ fun MathSolverScreen(
                             Spacer(modifier = Modifier.width(4.dp))
                             Text("推导中...", fontSize = 12.sp)
                         } else {
-                            Icon(Icons.Default.AutoAwesome, null, modifier = Modifier.size(14.dp))
+                            Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(14.dp))
                             Spacer(modifier = Modifier.width(4.dp))
                             Text("开始推导", fontSize = 12.sp)
                         }

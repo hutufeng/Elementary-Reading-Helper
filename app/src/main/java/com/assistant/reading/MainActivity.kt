@@ -173,7 +173,7 @@ class MainActivity : ComponentActivity() {
                             NavigationBarItem(
                                 selected = selectedTab == 0,
                                 onClick = { selectedTab = 0 },
-                                icon = { Icon(Icons.Default.MenuBook, contentDescription = "语文伴读") },
+                                icon = { Icon(Icons.Default.Book, contentDescription = "语文伴读") },
                                 label = { Text("语文伴读", fontSize = 12.sp) }
                             )
                             NavigationBarItem(
@@ -182,7 +182,7 @@ class MainActivity : ComponentActivity() {
                                     selectedTab = 1
                                     bridgeManager.checkLoginStatus(forceReload = false)
                                 },
-                                icon = { Icon(Icons.Default.Calculate, contentDescription = "理科解题") },
+                                icon = { Icon(Icons.Default.Edit, contentDescription = "理科解题") },
                                 label = { Text("理科解题", fontSize = 12.sp) }
                             )
                         }
