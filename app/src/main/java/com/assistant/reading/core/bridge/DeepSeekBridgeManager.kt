@@ -171,13 +171,59 @@ class DeepSeekBridgeManager(private val context: Context) {
     }
 
     /**
-     * 注入 DOM 监听与捕获脚本 (符合 W3C 标准，避免非法选择器崩溃)
+     * 注入 DOM 监听与捕获脚本 (符合 W3C 标准，支持全量提取解题所有段落)
      */
     private fun injectObserverScript() {
         val js = """
             (function() {
                 if (window.__ds_observer_injected) return;
                 window.__ds_observer_injected = true;
+
+                function extractFullAiResponse() {
+                    const allMarkdowns = Array.from(document.querySelectorAll('.ds-markdown'));
+                    if (allMarkdowns.length === 0) return null;
+
+                    // 找到最后一个 markdown 所在的整轮消息容器
+                    const lastMd = allMarkdowns[allMarkdowns.length - 1];
+                    let messageRoot = lastMd;
+                    let curr = lastMd.parentElement;
+                    while (curr && curr !== document.body) {
+                        if (curr.querySelectorAll('.ds-markdown').length > 1 || curr.querySelector('[class*="thinking"], [class*="thought"]')) {
+                            messageRoot = curr;
+                        }
+                        if (curr.getAttribute('role') === 'log' || curr.id === 'chat-container') break;
+                        curr = curr.parentElement;
+                    }
+
+                    // 1. 提取思考过程
+                    let thinking = "";
+                    const thinkElem = messageRoot.querySelector('[class*="thinking"], [class*="thought"]');
+                    if (thinkElem) {
+                        thinking = thinkElem.innerText || "";
+                    }
+
+                    // 2. 提取完整解答：将所有非思考容器的 markdown 块全部提取拼接，绝不漏掉任何一个步骤！
+                    const answerMds = Array.from(messageRoot.querySelectorAll('.ds-markdown')).filter(md => {
+                        return !thinkElem || !thinkElem.contains(md);
+                    });
+
+                    let fullAnswer = "";
+                    if (answerMds.length > 0) {
+                        fullAnswer = answerMds.map(md => (md.innerText || "").trim()).filter(t => t.length > 0).join("\n\n");
+                    } else {
+                        const clone = messageRoot.cloneNode(true);
+                        const cloneThink = clone.querySelector('[class*="thinking"], [class*="thought"]');
+                        if (cloneThink) cloneThink.remove();
+                        const cloneBtns = clone.querySelectorAll('button, [class*="action"]');
+                        cloneBtns.forEach(b => b.remove());
+                        fullAnswer = clone.innerText || "";
+                    }
+
+                    return {
+                        thinking: thinking.trim(),
+                        answer: fullAnswer.trim()
+                    };
+                }
 
                 // 监听内容产出
                 const observer = new MutationObserver(() => {
@@ -193,33 +239,11 @@ class DeepSeekBridgeManager(private val context: Context) {
                         window.AndroidBridge.onError(errorElem.innerText.trim());
                     }
 
-                    // 3. 获取所有问答轮次的消息气泡
-                    const bubbles = document.querySelectorAll('.ds-markdown, [class*="markdown"], div[class*="chat-message"]');
-                    if (bubbles.length > 0) {
-                        const lastBubble = bubbles[bubbles.length - 1];
-                        
-                        // 寻找思考过程
-                        let thinking = "";
-                        const thinkElem = lastBubble.querySelector('[class*="thinking"], [class*="thought"]');
-                        if (thinkElem) {
-                            thinking = thinkElem.innerText || "";
-                        }
-
-                        // 获取正式解答纯文本 (严格克隆并剥离思考容器，避免思考内容混入正式解答)
-                        let answer = "";
-                        if (thinkElem) {
-                            const clone = lastBubble.cloneNode(true);
-                            const cloneThink = clone.querySelector('[class*="thinking"], [class*="thought"]');
-                            if (cloneThink) cloneThink.remove();
-                            answer = clone.innerText || "";
-                        } else {
-                            answer = lastBubble.innerText || "";
-                        }
-
-                        // 判断是否正在生成中 (通过打字光标或停止生成按钮判断)
+                    // 3. 提取全量问答内容
+                    const res = extractFullAiResponse();
+                    if (res && (res.thinking || res.answer)) {
                         const isGenerating = !!document.querySelector('.ds-typing, [class*="loading"], [class*="generating"], button[aria-label*="停止"]');
-
-                        window.AndroidBridge.onContentUpdate(thinking.trim(), answer.trim(), !isGenerating);
+                        window.AndroidBridge.onContentUpdate(res.thinking, res.answer, !isGenerating);
                     }
                 });
 
@@ -259,7 +283,7 @@ class DeepSeekBridgeManager(private val context: Context) {
             if (_solveStatus.value == SolveStatus.SOLVING && _currentAnswer.value.isBlank()) {
                 _stepDiagnosis.value = "网页端响应较慢，可能触发人机验证，请点击【🌐 官方网页】查看"
             }
-        }.also { mainHandler.postDelayed(it, 16000) }
+        }.also { mainHandler.postDelayed(it, 20000) }
 
         val promptText = buildProblemPrompt(rawProblemText)
 
@@ -270,22 +294,31 @@ class DeepSeekBridgeManager(private val context: Context) {
                         try { window.AndroidBridge.onStep(msg); } catch(e) {}
                     }
 
-                    function findBtnByText(selector, text) {
-                        const elements = document.querySelectorAll(selector);
-                        for (let i = 0; i < elements.length; i++) {
-                            if (elements[i].innerText && elements[i].innerText.includes(text)) return elements[i];
-                        }
-                        return null;
-                    }
+                    function dispatchMobileClick(element) {
+                        if (!element) return;
+                        const rect = element.getBoundingClientRect();
+                        const x = rect.left + rect.width / 2;
+                        const y = rect.top + rect.height / 2;
+                        
+                        try {
+                            const touch = new Touch({
+                                identifier: Date.now(),
+                                target: element,
+                                clientX: x,
+                                clientY: y,
+                                pageX: x,
+                                pageY: y
+                            });
+                            element.dispatchEvent(new TouchEvent('touchstart', { touches: [touch], targetTouches: [touch], changedTouches: [touch], bubbles: true, cancelable: true }));
+                            element.dispatchEvent(new TouchEvent('touchend', { touches: [touch], targetTouches: [touch], changedTouches: [touch], bubbles: true, cancelable: true }));
+                        } catch(e) {}
 
-                    function dispatchFullClick(elem) {
-                        if (!elem) return;
                         ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(name => {
                             try {
-                                elem.dispatchEvent(new MouseEvent(name, { bubbles: true, cancelable: true, view: window }));
+                                element.dispatchEvent(new MouseEvent(name, { clientX: x, clientY: y, bubbles: true, cancelable: true, view: window }));
                             } catch(e) {}
                         });
-                        try { elem.click(); } catch(e) {}
+                        try { element.click(); } catch(e) {}
                     }
 
                     function dispatchEnter(elem) {
@@ -306,21 +339,41 @@ class DeepSeekBridgeManager(private val context: Context) {
                         });
                     }
 
-                    // 1. 确保 R1 深度思考按钮状态对齐
+                    // 1. 深度思考 (R1) 模式联动与强制开启
                     logStep("正在对齐 R1 深度思考模式...");
-                    const r1Btn = document.querySelector('button[aria-label*="深度思考"]') 
-                               || findBtnByText('button', '深度思考') 
-                               || findBtnByText('div[role="button"]', '深度思考');
+                    function getR1Button() {
+                        const candidates = Array.from(document.querySelectorAll('button, div[role="button"], div, span'));
+                        for (const el of candidates) {
+                            const txt = (el.innerText || el.getAttribute('aria-label') || '').trim();
+                            if ((txt === '深度思考' || txt === '深度思考 (R1)' || txt === 'DeepThink (R1)' || txt.includes('深度思考')) && el.children.length <= 3) {
+                                return el.closest('button, div[role="button"]') || el;
+                            }
+                        }
+                        return document.querySelector('button[aria-label*="深度思考"]');
+                    }
 
+                    function isR1Active(btn) {
+                        if (!btn) return false;
+                        if (btn.getAttribute('aria-checked') === 'true' || btn.getAttribute('aria-pressed') === 'true') return true;
+                        const cls = (btn.className || '').toString();
+                        if (cls.includes('active') || cls.includes('checked') || cls.includes('primary') || cls.includes('selected') || cls.includes('on')) return true;
+                        const style = window.getComputedStyle(btn);
+                        const bg = style.backgroundColor || '';
+                        if (bg.includes('77') || bg.includes('rgb(77') || bg.includes('rgba(77') || bg.includes('blue')) return true;
+                        return false;
+                    }
+
+                    const r1Btn = getR1Button();
                     if (r1Btn) {
-                        const isChecked = r1Btn.getAttribute('aria-checked') === 'true' || r1Btn.classList.contains('active');
-                        const wantChecked = ${enableR1};
-                        if (isChecked !== wantChecked) {
-                            r1Btn.click();
+                        const active = isR1Active(r1Btn);
+                        const wantActive = ${enableR1};
+                        if (active !== wantActive) {
+                            dispatchMobileClick(r1Btn);
+                            await new Promise(r => setTimeout(r, 200));
                         }
                     }
 
-                    // 2. 如果存在图片，模拟注入上传
+                    // 2. 注入图片并智能等待上传完成态
                     ${if (!imageBase64.isNullOrBlank()) """
                     logStep("正在注入题目原图...");
                     try {
@@ -334,7 +387,7 @@ class DeepSeekBridgeManager(private val context: Context) {
                             dataTransfer.items.add(file);
                             fileInput.files = dataTransfer.files;
                             fileInput.dispatchEvent(new Event('change', { bubbles: true }));
-                            await new Promise(r => setTimeout(r, 600));
+                            logStep("原图已注入，正在等待官方解析与上传就绪...");
                         }
                     } catch(err) {
                         logStep("图片注入跳过: " + err.message);
@@ -342,7 +395,6 @@ class DeepSeekBridgeManager(private val context: Context) {
                     """ else ""}
 
                     // 3. 填入定制 Prompt
-                    logStep("正在填入解题提示词...");
                     let textarea = document.querySelector('textarea') 
                                 || document.querySelector('div[contenteditable="true"]');
                     if (!textarea) {
@@ -364,40 +416,79 @@ class DeepSeekBridgeManager(private val context: Context) {
                     textarea.dispatchEvent(new Event('input', { bubbles: true }));
                     textarea.dispatchEvent(new Event('change', { bubbles: true }));
 
-                    await new Promise(r => setTimeout(r, 300));
+                    // 4. 定位发送按钮 (严格在输入框区域内寻找，绝不误触顶部菜单)
+                    function findSendButton(textareaElem) {
+                        // 策略 A：从 textarea 向上遍历父级容器寻找右下角带 SVG 的按钮
+                        let parent = textareaElem.parentElement;
+                        while (parent && parent !== document.body) {
+                            const btns = Array.from(parent.querySelectorAll('button, div[role="button"]'));
+                            for (let i = btns.length - 1; i >= 0; i--) {
+                                const b = btns[i];
+                                const text = (b.innerText || b.getAttribute('aria-label') || '').trim();
+                                if (text.includes('思考') || text.includes('联网') || text.includes('上传') || text.includes('搜索')) continue;
+                                if (b.querySelector('svg')) {
+                                    return b;
+                                }
+                            }
+                            if (btns.length >= 2) break;
+                            parent = parent.parentElement;
+                        }
 
-                    // 4. 定位发送按钮并触发 (多轮询重试机制)
-                    logStep("正在激活并触发自动发送...");
-                    function getSendButton() {
-                        const direct = document.querySelector('button[type="submit"], div[role="button"][aria-label*="发送"], button[aria-label*="发送"], [class*="send-btn"]');
-                        if (direct) return direct;
-                        
-                        const allButtons = Array.from(document.querySelectorAll('button, div[role="button"]'));
-                        for (let b of allButtons) {
-                            if (b.querySelector('svg')) return b;
+                        // 策略 B：全局底部带 SVG 按钮
+                        const allBtns = Array.from(document.querySelectorAll('button, div[role="button"]'));
+                        for (let i = allBtns.length - 1; i >= 0; i--) {
+                            const b = allBtns[i];
+                            const rect = b.getBoundingClientRect();
+                            if (rect.top > window.innerHeight * 0.4 && b.querySelector('svg')) {
+                                const text = (b.innerText || b.getAttribute('aria-label') || '').trim();
+                                if (!text.includes('思考') && !text.includes('联网') && !text.includes('上传')) {
+                                    return b;
+                                }
+                            }
                         }
                         return null;
                     }
 
-                    // 启动 4 次循环触发，直到官方页面进入生成状态或输入框被清空
+                    // 5. 智能等待图片上传完成态与发送就绪 (最长等待 12 秒)
+                    const hasImage = ${!imageBase64.isNullOrBlank()};
+                    const maxWait = hasImage ? 12000 : 2500;
+                    const startTime = Date.now();
+                    logStep(hasImage ? "正在等待题目图片上传解析完成..." : "正在准备自动发送...");
+
+                    let sendBtn = null;
+                    while (Date.now() - startTime < maxWait) {
+                        sendBtn = findSendButton(textarea);
+                        if (sendBtn) {
+                            const isDisabled = sendBtn.hasAttribute('disabled') 
+                                            || sendBtn.getAttribute('aria-disabled') === 'true'
+                                            || (sendBtn.className || '').includes('disabled');
+                            if (!isDisabled) {
+                                break;
+                            }
+                        }
+                        await new Promise(r => setTimeout(r, 350));
+                    }
+
+                    // 6. 执行多次移动端点击与回车触发
+                    logStep("图片与题目已就绪，正在自动触发发送...");
                     let attempts = 0;
                     const timer = setInterval(() => {
                         attempts++;
-                        const sendBtn = getSendButton();
+                        const currentBtn = findSendButton(textarea);
                         const isStopBtn = !!document.querySelector('button[aria-label*="停止"], [class*="stop-btn"], div[role="button"][aria-label*="停止"]');
                         const isCleared = textarea && textarea.value && textarea.value.trim() === '';
 
-                        if (isStopBtn || isCleared || attempts >= 4) {
+                        if (isStopBtn || isCleared || attempts >= 5) {
                             clearInterval(timer);
-                            logStep("已成功触发发送，官方大模型正在深度思考...");
+                            logStep("已成功触发发送，官方大模型正在推导...");
                             return;
                         }
 
-                        if (sendBtn && sendBtn.getAttribute('aria-disabled') !== 'true') {
-                            dispatchFullClick(sendBtn);
+                        if (currentBtn && currentBtn.getAttribute('aria-disabled') !== 'true') {
+                            dispatchMobileClick(currentBtn);
                         }
                         dispatchEnter(textarea);
-                    }, 250);
+                    }, 300);
 
                 } catch (e) {
                     window.AndroidBridge.onError("发送题目发生异常: " + e.message);

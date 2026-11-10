@@ -166,3 +166,4 @@ object MathFormulaFormatter {
         return text.trim()
     }
 }
+
