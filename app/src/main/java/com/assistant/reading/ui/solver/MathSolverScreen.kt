@@ -130,10 +130,13 @@ fun MathSolverScreen(
 
     Box(modifier = modifier.fillMaxSize()) {
         // ================= 常驻底层挂载官方 WebView =================
-        // 核心技术保障：始终保持 Attached to Window，彻底根除 Chromium 内核后台休眠与定时器节流
-        // 在原生精读模式下以 1px 挂载运行，推导完毕自动秒级回调，绝不再需要用户手动切进网页触发！
+        // 核心技术保障：始终保持 Attached to Window，且保持全屏物理尺寸 (MATCH_PARENT)
+        // 绝不缩小至 1px 或设置透明度，防止 Chromium 渲染树剔除与定时器深度休眠！
+        // 原生精读模式下由上层不透明 Column 覆盖，双轨全速运行
         Box(
-            modifier = if (currentViewMode == 1) Modifier.fillMaxSize().padding(top = 46.dp) else Modifier.size(1.dp).alpha(0.001f)
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(top = if (currentViewMode == 1) 46.dp else 0.dp)
         ) {
             AndroidView(
                 modifier = Modifier.fillMaxSize(),

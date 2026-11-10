@@ -9,6 +9,7 @@ import android.webkit.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONObject
+import org.json.JSONTokener
 
 enum class AuthStatus {
     CHECKING,
@@ -87,6 +88,10 @@ class DeepSeekBridgeManager(private val context: Context) {
             settings.loadWithOverviewMode = true
             settings.userAgentString = USER_AGENT
             settings.cacheMode = WebSettings.LOAD_DEFAULT
+
+            // 显式激活运行周期与计时器，防止后台休眠
+            onResume()
+            resumeTimers()
 
             // 启用 Cookie 支持
             CookieManager.getInstance().setAcceptCookie(true)
@@ -347,12 +352,31 @@ class DeepSeekBridgeManager(private val context: Context) {
                     }
                 }
 
-                // 暴露主动强制提取接口供 Native 端轮询兜底调用
+                // 暴露主动强制提取接口供 Native 端高频轮询调用 (返回完整状态与提取结果)
                 window.__ds_force_extract = function() {
+                    const stopBtn = document.querySelector('button[aria-label*="停止"], [class*="stop-btn"], div[role="button"][aria-label*="停止"]');
+                    const isStopVisible = !!(stopBtn && stopBtn.offsetParent !== null);
+                    const isTyping = !!document.querySelector('.ds-typing');
+                    const isGenerating = isStopVisible || isTyping;
+
                     const data = extractLatestTurnData();
-                    if (data && (data.markdown || data.html)) {
-                        window.AndroidBridge.onSolveFinished(data.thinking, data.markdown, data.html, data.plainText);
+                    const hasContent = !!(data && (data.markdown || data.html));
+
+                    const result = {
+                        isGenerating: isGenerating,
+                        thinking: (data && data.thinking) || "",
+                        markdown: (data && data.markdown) || "",
+                        html: (data && data.html) || "",
+                        plainText: (data && data.plainText) || ""
+                    };
+
+                    // 如果网页端推导已结束且已有内容，直接主动上报
+                    if (!isGenerating && hasContent) {
+                        try {
+                            window.AndroidBridge.onSolveFinished(result.thinking, result.markdown, result.html, result.plainText);
+                        } catch(e) {}
                     }
+                    return JSON.stringify(result);
                 };
 
                 // 1. DOM 变动监听
@@ -368,6 +392,97 @@ class DeepSeekBridgeManager(private val context: Context) {
             webView.resumeTimers()
             webView.evaluateJavascript(js, null)
         }
+    }
+
+    /**
+     * 统一处理推导完成 (UI 刷新与状态闭环，供 JS 回调和 Native 轮询双向复用)
+     */
+    fun handleSolveFinished(thinking: String, markdown: String, html: String, plainText: String) {
+        if (_solveStatus.value == SolveStatus.SOLVING && (markdown.isNotBlank() || html.isNotBlank())) {
+            solveTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+            solveTimeoutRunnable = null
+            _currentThinking.value = thinking
+            _currentAnswer.value = markdown
+            _currentAnswerHtml.value = html
+            _currentPlainText.value = plainText.ifBlank { markdown }
+            _solveStatus.value = SolveStatus.SUCCESS
+            _stepDiagnosis.value = "推导完成"
+        }
+    }
+
+    /**
+     * 启动 Native 强劲主动轮询机制 (每 1.5 秒直接抓取 JSON 状态，绝不盲等，持续 3 分钟)
+     */
+    private fun startActivePolling() {
+        solveTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        var pollCount = 0
+        val maxPollCount = 120 // 120 次 * 1.5秒 = 180秒 (3分钟)，完全覆盖大模型深度思考与输出耗时
+
+        val pollTask = object : Runnable {
+            override fun run() {
+                if (_solveStatus.value != SolveStatus.SOLVING) {
+                    return
+                }
+                pollCount++
+
+                mainHandler.post {
+                    webView.resumeTimers()
+                }
+
+                val extractJs = """
+                    (function() {
+                        try {
+                            if (window.__ds_force_extract) {
+                                return window.__ds_force_extract();
+                            }
+                        } catch(e) {}
+                        return "";
+                    })()
+                """.trimIndent()
+
+                webView.evaluateJavascript(extractJs) { rawResult ->
+                    if (_solveStatus.value != SolveStatus.SOLVING) return@evaluateJavascript
+                    if (!rawResult.isNullOrBlank() && rawResult != "null" && rawResult != "\"\"") {
+                        try {
+                            val parsed = if (rawResult.startsWith("\"") && rawResult.endsWith("\"")) {
+                                JSONTokener(rawResult).nextValue().toString()
+                            } else {
+                                rawResult
+                            }
+                            val obj = JSONObject(parsed)
+                            val isGenerating = obj.optBoolean("isGenerating", false)
+                            val thinking = obj.optString("thinking", "")
+                            val markdown = obj.optString("markdown", "")
+                            val html = obj.optString("html", "")
+                            val plainText = obj.optString("plainText", "")
+
+                            if (isGenerating) {
+                                _stepDiagnosis.value = if (thinking.isNotBlank() && markdown.isBlank()) {
+                                    "🧠 官方 R1 正在深度思考中..."
+                                } else {
+                                    "📝 正在输出公式与规范解答..."
+                                }
+                            } else if (markdown.isNotBlank() || html.isNotBlank()) {
+                                mainHandler.post {
+                                    handleSolveFinished(thinking, markdown, html, plainText)
+                                }
+                                return@evaluateJavascript
+                            }
+                        } catch (e: Exception) {}
+                    }
+                }
+
+                if (pollCount >= maxPollCount) {
+                    if (_currentAnswer.value.isBlank()) {
+                        _stepDiagnosis.value = "推导等待时间较长，若触发人机验证请点击【🌐 官方网页】"
+                    }
+                } else {
+                    mainHandler.postDelayed(this, 1500)
+                }
+            }
+        }
+        solveTimeoutRunnable = pollTask
+        mainHandler.postDelayed(pollTask, 1500)
     }
 
     /**
@@ -394,26 +509,8 @@ class DeepSeekBridgeManager(private val context: Context) {
         _errorMessage.value = null
         _stepDiagnosis.value = "正在初始化题目会话..."
 
-        // 取消上一轮可能的超时任务并启动 Native 端主动抓取兜底机制 (每 2 秒主动探测一次)
-        solveTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
-        val timeoutTask = object : Runnable {
-            var attempts = 0
-            override fun run() {
-                if (_solveStatus.value == SolveStatus.SOLVING && _currentAnswer.value.isBlank()) {
-                    attempts++
-                    mainHandler.post {
-                        webView.evaluateJavascript("window.__ds_force_extract && window.__ds_force_extract()", null)
-                    }
-                    if (attempts >= 10) {
-                        _stepDiagnosis.value = "网页端响应较慢，可能触发人机验证，请点击【🌐 官方网页】查看"
-                    } else {
-                        mainHandler.postDelayed(this, 2000)
-                    }
-                }
-            }
-        }
-        solveTimeoutRunnable = timeoutTask
-        mainHandler.postDelayed(timeoutTask, 2000)
+        // 启动 Native 端高频主动抓取机制 (每 1.5 秒主动探测一次)
+        startActivePolling()
 
         val promptText = buildProblemPrompt(rawProblemText)
 
@@ -690,25 +787,8 @@ class DeepSeekBridgeManager(private val context: Context) {
         _solveStatus.value = SolveStatus.SOLVING
         _stepDiagnosis.value = "正在追加追问..."
 
-        solveTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
-        val followUpTimeoutTask = object : Runnable {
-            var attempts = 0
-            override fun run() {
-                if (_solveStatus.value == SolveStatus.SOLVING && _currentAnswer.value.isBlank()) {
-                    attempts++
-                    mainHandler.post {
-                        webView.evaluateJavascript("window.__ds_force_extract && window.__ds_force_extract()", null)
-                    }
-                    if (attempts >= 10) {
-                        _stepDiagnosis.value = "网页端响应较慢，可能触发人机验证，请点击【🌐 官方网页】查看"
-                    } else {
-                        mainHandler.postDelayed(this, 2000)
-                    }
-                }
-            }
-        }
-        solveTimeoutRunnable = followUpTimeoutTask
-        mainHandler.postDelayed(followUpTimeoutTask, 2000)
+        // 启动 Native 端高频主动抓取机制 (每 1.5 秒主动探测一次)
+        startActivePolling()
 
         val js = """
             (function() {
@@ -892,15 +972,8 @@ class DeepSeekBridgeManager(private val context: Context) {
 
         @JavascriptInterface
         fun onSolveFinished(thinking: String, markdown: String, html: String, plainText: String) {
-            // 只有当 Native 处于求解状态，且获取到了有效内容时，才转为 SUCCESS
-            if (_solveStatus.value == SolveStatus.SOLVING && (markdown.isNotBlank() || html.isNotBlank())) {
-                solveTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
-                _currentThinking.value = thinking
-                _currentAnswer.value = markdown
-                _currentAnswerHtml.value = html
-                _currentPlainText.value = plainText.ifBlank { markdown }
-                _solveStatus.value = SolveStatus.SUCCESS
-                _stepDiagnosis.value = "推导完成"
+            mainHandler.post {
+                handleSolveFinished(thinking, markdown, html, plainText)
             }
         }
 
