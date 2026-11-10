@@ -393,7 +393,7 @@ class DeepSeekBridgeManager(private val context: Context) {
                 (parent as? ViewGroup)?.removeView(this)
                 stopLoading()
                 webChromeClient = null
-                webViewClient = null
+                webViewClient = WebViewClient()
                 removeAllViews()
                 destroy()
             }

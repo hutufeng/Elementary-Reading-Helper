@@ -428,14 +428,15 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         }
-                    } else {
-                        // 选项卡 2：理科深度解题 (内置 DeepSeek-R1 满血图文推理)
-                        MathSolverScreen(
-                            bridgeManager = bridgeManager,
-                            voiceManager = voiceManager,
-                            modifier = Modifier.padding(padding)
-                        )
                     }
+                } else {
+                    // 选项卡 2：理科深度解题 (内置 DeepSeek-R1 满血图文推理)
+                    MathSolverScreen(
+                        bridgeManager = bridgeManager,
+                        voiceManager = voiceManager,
+                        modifier = Modifier.padding(padding)
+                    )
+                }
                 }
 
                 // 5. 【需求 3】：支持自定义 API 地址、模型切换、语速设置与详尽使用说明对话框
