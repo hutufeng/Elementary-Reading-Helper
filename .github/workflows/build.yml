@@ -89,7 +89,16 @@ jobs:
     - name: 规整并重命名 APK 产物
       run: |
         mkdir -p release_apks
-        cp app/build/outputs/apk/release/*.apk release_apks/StudentReadingAssistant-${{ inputs.version }}.apk
+        echo ">>> 当前构建产物目录："
+        find app/build/outputs/ -type f || true
+        APK_FILE=$(find app/build/outputs/apk/ -name "*.apk" | head -n 1)
+        if [ -n "$APK_FILE" ]; then
+          echo ">>> 成功找到 APK 产物: $APK_FILE"
+          cp "$APK_FILE" release_apks/StudentReadingAssistant-${{ inputs.version }}.apk
+        else
+          echo ">>> 错误：未检索到任何 APK 产物文件！"
+          exit 1
+        fi
 
     - name: 上传构建产物 (Artifacts 归档备份)
       uses: actions/upload-artifact@v4
