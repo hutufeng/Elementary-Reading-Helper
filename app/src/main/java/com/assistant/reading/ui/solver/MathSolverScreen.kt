@@ -182,7 +182,10 @@ fun MathSolverScreen(
                     IconButton(onClick = { bridgeManager.checkLoginStatus(forceReload = true) }) {
                         Icon(Icons.Default.Refresh, contentDescription = "刷新", tint = Color.White)
                     }
-                    IconButton(onClick = { bridgeManager.startNewChat() }) {
+                    IconButton(onClick = {
+                        voiceManager.stopSpeaking()
+                        bridgeManager.startNewChat()
+                    }) {
                         Icon(Icons.Default.Add, contentDescription = "新一题", tint = Color.White)
                     }
                     IconButton(onClick = { bridgeManager.logoutAndClear() }) {
@@ -242,6 +245,7 @@ fun MathSolverScreen(
                             // 开启新一题 (隔离上下文)
                             Button(
                                 onClick = {
+                                    voiceManager.stopSpeaking()
                                     problemText = ""
                                     selectedImageUri = null
                                     selectedImageBase64 = null

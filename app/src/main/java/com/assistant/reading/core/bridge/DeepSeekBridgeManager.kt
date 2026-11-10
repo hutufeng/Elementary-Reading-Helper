@@ -300,6 +300,84 @@ class DeepSeekBridgeManager(private val context: Context) {
                     };
                 }
 
+                // 基于“停止状态 vs 发送/操作工具栏状态”互斥的第一性原理精准判定大模型生成状态
+                function detectGenerationStatus() {
+                    const allButtons = Array.from(document.querySelectorAll('button, div[role="button"], a[role="button"]'));
+                    let hasStopButton = false;
+                    let hasSendButton = false;
+                    let hasMessageActionTools = false;
+
+                    for (const btn of allButtons) {
+                        const label = (btn.getAttribute('aria-label') || btn.innerText || btn.title || '').trim().toLowerCase();
+                        const isStopWord = label.includes('停止') || label.includes('stop') || label.includes('终止');
+                        // 判定停止图标：包含矩形/正方形方块
+                        const hasSquareIcon = !!btn.querySelector('rect, [d*="M6 6h12v12"], [d*="M4 4h16v16"], [d*="M3 3h18v18"], [d*="M2 2h20v20"], [d*="M5 5h14v14"]');
+                        const isStopClass = typeof btn.className === 'string' && btn.className.toLowerCase().includes('stop');
+
+                        if (isStopWord || hasSquareIcon || isStopClass) {
+                            const rect = btn.getBoundingClientRect();
+                            if (rect.width > 0 && rect.height > 0) {
+                                hasStopButton = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    // 检查打字机闪烁光标 (DeepSeek 专属 class 和通用 typing)
+                    const hasTypingCursor = !!document.querySelector('.ds-typing, .typing, [class*="cursor"], [class*="blinking"]');
+
+                    // 检查思考活跃度 (如“思考中 00:15”)
+                    let isThinkingActive = false;
+                    const thinkElems = Array.from(document.querySelectorAll('[class*="thinking"], [class*="thought"]'));
+                    for (const el of thinkElems) {
+                        const txt = (el.innerText || '').trim();
+                        if (txt.includes('思考中') || txt.includes('Thinking...')) {
+                            isThinkingActive = true;
+                            break;
+                        }
+                    }
+
+                    // 检查大模型完成的双重铁证：
+                    // 铁证 1：消息底部渲染出了【复制】或【重新生成/重新回答】操作工具栏
+                    for (const btn of allButtons) {
+                        const label = (btn.getAttribute('aria-label') || btn.innerText || btn.title || '').trim().toLowerCase();
+                        if (label.includes('复制') || label.includes('copy') || label.includes('重新生成') || label.includes('重新回答') || label.includes('regenerate')) {
+                            const rect = btn.getBoundingClientRect();
+                            if (rect.width > 0 && rect.height > 0) {
+                                hasMessageActionTools = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    // 铁证 2：输入框右侧恢复为【发送状态】(向上箭头或发送按钮)
+                    for (const btn of allButtons) {
+                        const label = (btn.getAttribute('aria-label') || btn.innerText || btn.title || '').trim().toLowerCase();
+                        const isSendWord = label.includes('发送') || label.includes('send');
+                        const hasArrowSvg = !!btn.querySelector('path, polygon, polyline');
+                        const rect = btn.getBoundingClientRect();
+
+                        if (rect.top > window.innerHeight * 0.3 && (isSendWord || (hasArrowSvg && !label.includes('思考') && !label.includes('上传')))) {
+                            hasSendButton = true;
+                            break;
+                        }
+                    }
+
+                    // 严格综合裁决：
+                    // 1. 只要存在停止按钮、或有打字光标、或思考活跃中 -> 100% 确定仍在生成中！
+                    if (hasStopButton || hasTypingCursor || isThinkingActive) {
+                        return true;
+                    }
+
+                    // 2. 只要停止按钮与光标消失，且满足【消息出现复制/重新生成栏】或【输入框发送按钮恢复】任一铁证 -> 100% 判定推导彻底完成！
+                    if (hasMessageActionTools || hasSendButton) {
+                        return false;
+                    }
+
+                    // 3. 过渡中间态：既无停止按钮也无工具栏/发送按钮 -> 保守判定仍在生成过渡态！
+                    return true;
+                }
+
                 // 双轨保障状态机：绝不死锁，只要网页端出了结果立即捕获！
                 let lastStableLength = 0;
                 let stableCount = 0;
@@ -317,24 +395,21 @@ class DeepSeekBridgeManager(private val context: Context) {
                         return;
                     }
 
-                    // 2. 检查是否有停止按钮或打字光标 (严格判定可见性，绝不误判常规 SVG 图形)
-                    const stopBtn = document.querySelector('button[aria-label*="停止"], [class*="stop-btn"], div[role="button"][aria-label*="停止"]');
-                    const isStopVisible = !!(stopBtn && stopBtn.offsetParent !== null);
-                    const isTyping = !!document.querySelector('.ds-typing');
-                    const isGenerating = isStopVisible || isTyping;
-
-                    // 3. 抓取回答内容
+                    // 2. 状态判定与内容提取
+                    const isGenerating = detectGenerationStatus();
                     const data = extractLatestTurnData();
                     const hasContent = !!(data && (data.markdown || data.html));
 
                     if (isGenerating) {
                         finishReported = false;
                         stableCount = 0;
-                        window.AndroidBridge.onGeneratingProgress("🧠 官方 R1 正在深度思考并严谨推导中...");
+                        const len = data ? (data.markdown || "").length : 0;
+                        const msg = len > 0 ? ("📝 正在输出公式与分步解答 (已生成 " + len + " 字)...") : "🧠 官方 R1 正在深度思考中...";
+                        window.AndroidBridge.onGeneratingProgress(msg);
                         return;
                     }
 
-                    // 4. 一旦非生成中且页面已具备有效解答，立即确认并汇报完成！
+                    // 3. 真正完成判定：非生成态(发送按钮已就绪) + 内容非空 + 连续 3 次检测(1.2秒以上)稳定不变！
                     if (hasContent) {
                         const currentLen = (data.markdown || "").length + (data.html || "").length;
                         if (currentLen === lastStableLength) {
@@ -344,8 +419,8 @@ class DeepSeekBridgeManager(private val context: Context) {
                             stableCount = 1;
                         }
 
-                        // 内容连续稳定或已停止生成，直接派发最终完整结果！
-                        if (stableCount >= 2 && !finishReported) {
+                        // 内容连续稳定且发送按钮就绪，直接派发最终完整结果！
+                        if (stableCount >= 3 && !finishReported) {
                             finishReported = true;
                             window.AndroidBridge.onSolveFinished(data.thinking, data.markdown, data.html, data.plainText);
                         }
@@ -354,11 +429,7 @@ class DeepSeekBridgeManager(private val context: Context) {
 
                 // 暴露主动强制提取接口供 Native 端高频轮询调用 (返回完整状态与提取结果)
                 window.__ds_force_extract = function() {
-                    const stopBtn = document.querySelector('button[aria-label*="停止"], [class*="stop-btn"], div[role="button"][aria-label*="停止"]');
-                    const isStopVisible = !!(stopBtn && stopBtn.offsetParent !== null);
-                    const isTyping = !!document.querySelector('.ds-typing');
-                    const isGenerating = isStopVisible || isTyping;
-
+                    const isGenerating = detectGenerationStatus();
                     const data = extractLatestTurnData();
                     const hasContent = !!(data && (data.markdown || data.html));
 
@@ -370,8 +441,8 @@ class DeepSeekBridgeManager(private val context: Context) {
                         plainText: (data && data.plainText) || ""
                     };
 
-                    // 如果网页端推导已结束且已有内容，直接主动上报
-                    if (!isGenerating && hasContent) {
+                    // 仅当非生成态(发送按钮已就绪)、内容有效且连续稳定时才上报完成
+                    if (!isGenerating && hasContent && stableCount >= 3) {
                         try {
                             window.AndroidBridge.onSolveFinished(result.thinking, result.markdown, result.html, result.plainText);
                         } catch(e) {}
@@ -457,10 +528,19 @@ class DeepSeekBridgeManager(private val context: Context) {
                             val plainText = obj.optString("plainText", "")
 
                             if (isGenerating) {
+                                // 实时渐进式流式输出预览：即使大模型仍在生成，也将已输出的内容实时刷给界面！
+                                if (markdown.isNotBlank()) {
+                                    _currentAnswer.value = markdown
+                                    _currentAnswerHtml.value = html
+                                    _currentPlainText.value = plainText
+                                }
+                                if (thinking.isNotBlank()) {
+                                    _currentThinking.value = thinking
+                                }
                                 _stepDiagnosis.value = if (thinking.isNotBlank() && markdown.isBlank()) {
                                     "🧠 官方 R1 正在深度思考中..."
                                 } else {
-                                    "📝 正在输出公式与规范解答..."
+                                    "📝 正在输出公式与规范解答（已输出 ${markdown.length} 字）..."
                                 }
                             } else if (markdown.isNotBlank() || html.isNotBlank()) {
                                 mainHandler.post {
@@ -832,41 +912,46 @@ class DeepSeekBridgeManager(private val context: Context) {
     }
 
     /**
-     * 开启新题目 (新建对话 session，隔离上下文)
+     * 开启新题目 (彻底新建对话 session，100% 隔离上下文与历史记录)
      */
     fun startNewChat() {
-        val js = """
-            (function() {
-                function findBtnByText(selector, text) {
-                    const elements = document.querySelectorAll(selector);
-                    for (let i = 0; i < elements.length; i++) {
-                        if (elements[i].innerText && elements[i].innerText.includes(text)) return elements[i];
-                    }
-                    return null;
-                }
-
-                const newChatBtn = document.querySelector('a[href*="/chat"]') 
-                                || findBtnByText('button', '新对话') 
-                                || findBtnByText('div[role="button"]', '新建对话');
-
-                if (newChatBtn) {
-                    newChatBtn.click();
-                } else {
-                    window.location.href = "https://chat.deepseek.com";
-                }
-            })();
-        """.trimIndent()
-
         mainHandler.post {
-            webView.evaluateJavascript(js, null)
-            _solveStatus.value = SolveStatus.IDLE
+            // 1. 彻底清空 Native 端的所有状态、答案与追问历史
+            solveTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+            solveTimeoutRunnable = null
+            _qaHistory.value = emptyList()
             _currentThinking.value = ""
             _currentAnswer.value = ""
             _currentAnswerHtml.value = ""
             _currentPlainText.value = ""
-            _errorMessage.value = null
-            _qaHistory.value = emptyList()
             lastSentQuestion = ""
+            _solveStatus.value = SolveStatus.IDLE
+            _errorMessage.value = null
+            _stepDiagnosis.value = "已开辟全新题目，请导入或输入新题目"
+
+            // 2. 网页端彻底开启新会话 (双重机制：先尝试 SPA 内点击新对话，再通过原生 loadUrl 彻底重置根路由)
+            val js = """
+                (function() {
+                    try {
+                        const candidates = Array.from(document.querySelectorAll('a, button, div[role="button"], span'));
+                        for (const el of candidates) {
+                            const text = (el.innerText || el.getAttribute('aria-label') || '').trim();
+                            if (text === '开启新对话' || text === '新建对话' || text === '新对话' || text === 'New Chat') {
+                                el.click();
+                                return true;
+                            }
+                        }
+                    } catch(e) {}
+                    return false;
+                })()
+            """.trimIndent()
+
+            webView.evaluateJavascript(js) { clicked ->
+                // 如果未能通过 DOM 点击进入新对话，直接通过原生 loadUrl 重新加载干净主站路由！
+                if (clicked != "true" && clicked != "\"true\"") {
+                    webView.loadUrl(DEEPSEEK_HOME_URL)
+                }
+            }
         }
     }
 
