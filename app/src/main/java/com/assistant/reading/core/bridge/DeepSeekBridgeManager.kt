@@ -247,10 +247,14 @@ class DeepSeekBridgeManager(private val context: Context) {
                     return (clone.innerText || clone.textContent || "").replace(/\s+/g, ' ').trim();
                 }
 
-                // 精准定位最后一轮助手的独立消息容器 (物理隔离上一问与历史问答，彻底杜绝内容重复)
+                // 精准定位最后一轮助手的独立消息容器 (支持移动端多种类名，彻底杜绝内容重复)
                 function getLastAiCard() {
-                    const allMds = Array.from(document.querySelectorAll('.ds-markdown'));
-                    if (allMds.length === 0) return null;
+                    const allMds = Array.from(document.querySelectorAll('.ds-markdown, [class*="ds-markdown"], [class*="markdown"], .chat-content, .message-content, [data-role="assistant"]'));
+                    if (allMds.length === 0) {
+                        const fallback = Array.from(document.querySelectorAll('[class*="message"], [role="listitem"]'));
+                        if (fallback.length > 0) return fallback[fallback.length - 1];
+                        return null;
+                    }
 
                     const lastMd = allMds[allMds.length - 1];
 
@@ -262,7 +266,7 @@ class DeepSeekBridgeManager(private val context: Context) {
                             curr = parent;
                             break;
                         }
-                        if (parent.getAttribute('role') === 'log' || parent.id === 'chat-container' || (parent.className && parent.className.includes('chat-list')) || parent.children.length > 8) {
+                        if (parent.getAttribute('role') === 'log' || parent.id === 'chat-container' || (parent.className && typeof parent.className === 'string' && parent.className.includes('chat-list')) || parent.children.length > 8) {
                             break;
                         }
                         curr = parent;
@@ -284,7 +288,7 @@ class DeepSeekBridgeManager(private val context: Context) {
                     }
 
                     // 2. 正式解答 (严格排除思考过程内部的 markdown，绝不混入)
-                    const answerMds = Array.from(card.querySelectorAll('.ds-markdown')).filter(md => {
+                    const answerMds = Array.from(card.querySelectorAll('.ds-markdown, [class*="markdown"]')).filter(md => {
                         return !thinkElem || !thinkElem.contains(md);
                     });
 
@@ -313,9 +317,10 @@ class DeepSeekBridgeManager(private val context: Context) {
                     };
                 }
 
-                // 严格等待生成完成状态机与防抖控制器
-                let finishTimer = null;
-                let isObservingGenerating = false;
+                // 双轨保障状态机：绝不死锁，只要网页端出了结果立即捕获！
+                let lastStableLength = 0;
+                let stableCount = 0;
+                let finishReported = false;
 
                 function checkStatus() {
                     // 1. 异常与验证码拦截
@@ -329,43 +334,55 @@ class DeepSeekBridgeManager(private val context: Context) {
                         return;
                     }
 
-                    // 2. 判断是否在大模型推导生成中
-                    const stopBtn = document.querySelector('button[aria-label*="停止"], [class*="stop-btn"], div[role="button"][aria-label*="停止"]');
+                    // 2. 检查是否有停止按钮或打字光标
+                    const stopBtn = document.querySelector('button[aria-label*="停止"], [class*="stop-btn"], div[role="button"][aria-label*="停止"], svg rect');
                     const isTyping = !!document.querySelector('.ds-typing, [class*="typing"]');
                     const isGenerating = !!(stopBtn || isTyping);
 
+                    // 3. 抓取回答内容
+                    const data = extractLatestTurnData();
+                    const hasContent = !!(data && (data.markdown || data.html));
+
                     if (isGenerating) {
-                        isObservingGenerating = true;
-                        if (finishTimer) {
-                            clearTimeout(finishTimer);
-                            finishTimer = null;
-                        }
-                        // 向原生发送进度状态，但绝不推送残缺的半截推导文本
+                        finishReported = false;
+                        stableCount = 0;
                         window.AndroidBridge.onGeneratingProgress("🧠 官方 R1 正在深度思考并严谨推导中...");
                         return;
                     }
 
-                    // 3. 从生成中转变为生成完毕，等待 600ms 确认完全稳定后再提取最终数据！
-                    if (isObservingGenerating) {
-                        if (!finishTimer) {
-                            finishTimer = setTimeout(() => {
-                                const stillStop = document.querySelector('button[aria-label*="停止"], [class*="stop-btn"], div[role="button"][aria-label*="停止"]');
-                                const stillTyping = !!document.querySelector('.ds-typing, [class*="typing"]');
-                                if (!stillStop && !stillTyping) {
-                                    isObservingGenerating = false;
-                                    finishTimer = null;
-                                    const data = extractLatestTurnData();
-                                    if (data && (data.markdown || data.html)) {
-                                        window.AndroidBridge.onSolveFinished(data.thinking, data.markdown, data.html, data.plainText);
-                                    }
-                                }
-                            }, 600);
+                    // 4. 一旦非生成中且页面已具备有效解答，立即确认并汇报完成！
+                    if (hasContent) {
+                        const currentLen = (data.markdown || "").length + (data.html || "").length;
+                        if (currentLen === lastStableLength) {
+                            stableCount++;
+                        } else {
+                            lastStableLength = currentLen;
+                            stableCount = 1;
+                        }
+
+                        // 内容连续稳定或已停止生成，直接派发最终完整结果！
+                        if (stableCount >= 2 && !finishReported) {
+                            finishReported = true;
+                            window.AndroidBridge.onSolveFinished(data.thinking, data.markdown, data.html, data.plainText);
                         }
                     }
                 }
 
+                // 暴露主动强制提取接口供 Native 端轮询兜底调用
+                window.__ds_force_extract = function() {
+                    const data = extractLatestTurnData();
+                    if (data && (data.markdown || data.html)) {
+                        window.AndroidBridge.onSolveFinished(data.thinking, data.markdown, data.html, data.plainText);
+                    }
+                };
+
+                // 1. DOM 变动监听
                 const observer = new MutationObserver(checkStatus);
                 observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+                // 2. 每 400ms 定时双保险轮询 (防止大模型停产后 DOM 静止导致漏检)
+                if (window.__ds_poll_timer) clearInterval(window.__ds_poll_timer);
+                window.__ds_poll_timer = setInterval(checkStatus, 400);
             })();
         """.trimIndent()
         mainHandler.post {
@@ -397,13 +414,26 @@ class DeepSeekBridgeManager(private val context: Context) {
         _errorMessage.value = null
         _stepDiagnosis.value = "正在初始化题目会话..."
 
-        // 取消上一轮可能的超时任务并启动新一轮诊断监控
+        // 取消上一轮可能的超时任务并启动 Native 端主动抓取兜底机制 (每 2 秒主动探测一次)
         solveTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
-        solveTimeoutRunnable = Runnable {
-            if (_solveStatus.value == SolveStatus.SOLVING && _currentAnswer.value.isBlank()) {
-                _stepDiagnosis.value = "网页端响应较慢，可能触发人机验证，请点击【🌐 官方网页】查看"
+        val timeoutTask = object : Runnable {
+            var attempts = 0
+            override fun run() {
+                if (_solveStatus.value == SolveStatus.SOLVING && _currentAnswer.value.isBlank()) {
+                    attempts++
+                    mainHandler.post {
+                        webView.evaluateJavascript("window.__ds_force_extract && window.__ds_force_extract()", null)
+                    }
+                    if (attempts >= 10) {
+                        _stepDiagnosis.value = "网页端响应较慢，可能触发人机验证，请点击【🌐 官方网页】查看"
+                    } else {
+                        mainHandler.postDelayed(this, 2000)
+                    }
+                }
             }
-        }.also { mainHandler.postDelayed(it, 20000) }
+        }
+        solveTimeoutRunnable = timeoutTask
+        mainHandler.postDelayed(timeoutTask, 2000)
 
         val promptText = buildProblemPrompt(rawProblemText)
 
@@ -669,6 +699,26 @@ class DeepSeekBridgeManager(private val context: Context) {
         _currentPlainText.value = ""
         _solveStatus.value = SolveStatus.SOLVING
         _stepDiagnosis.value = "正在追加追问..."
+
+        solveTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        val followUpTimeoutTask = object : Runnable {
+            var attempts = 0
+            override fun run() {
+                if (_solveStatus.value == SolveStatus.SOLVING && _currentAnswer.value.isBlank()) {
+                    attempts++
+                    mainHandler.post {
+                        webView.evaluateJavascript("window.__ds_force_extract && window.__ds_force_extract()", null)
+                    }
+                    if (attempts >= 10) {
+                        _stepDiagnosis.value = "网页端响应较慢，可能触发人机验证，请点击【🌐 官方网页】查看"
+                    } else {
+                        mainHandler.postDelayed(this, 2000)
+                    }
+                }
+            }
+        }
+        solveTimeoutRunnable = followUpTimeoutTask
+        mainHandler.postDelayed(followUpTimeoutTask, 2000)
 
         val js = """
             (function() {
