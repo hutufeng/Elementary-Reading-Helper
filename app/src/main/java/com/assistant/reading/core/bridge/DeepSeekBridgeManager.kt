@@ -217,8 +217,8 @@ class DeepSeekBridgeManager(private val context: Context) {
                         }
                     });
 
-                    // 2. 清除渲染噪音与交互按键
-                    clone.querySelectorAll('.katex-html, .katex-mathml, button, [class*="action"], [class*="feedback"]').forEach(el => el.remove());
+                    // 2. 清除渲染噪音与交互按键 (只清除真正的交互按钮与图标，严禁误杀包含 action 等类名的推导容器)
+                    clone.querySelectorAll('.katex-html, .katex-mathml, button, svg').forEach(el => el.remove());
 
                     // 3. 规范段落与列表换行
                     clone.querySelectorAll('p').forEach(p => {
@@ -228,7 +228,8 @@ class DeepSeekBridgeManager(private val context: Context) {
                         li.prepend(document.createTextNode("\n• "));
                     });
 
-                    let raw = (clone.innerText || clone.textContent || "").trim();
+                    // 4. 采用 textContent 全量递归提取，彻底杜绝游离 DOM 树中 innerText 提前截断的系统 Bug！
+                    let raw = (clone.textContent || "").trim();
                     return raw.replace(/\n{3,}/g, '\n\n');
                 }
 
@@ -249,51 +250,55 @@ class DeepSeekBridgeManager(private val context: Context) {
                         const textNode = document.createTextNode(" " + tex + " ");
                         if (k.parentNode) k.parentNode.replaceChild(textNode, k);
                     });
-                    clone.querySelectorAll('.katex-html, .katex-mathml, button, [class*="action"]').forEach(el => el.remove());
-                    return (clone.innerText || clone.textContent || "").replace(/\s+/g, ' ').trim();
+                    clone.querySelectorAll('.katex-html, .katex-mathml, button, svg').forEach(el => el.remove());
+                    return (clone.textContent || "").replace(/\s+/g, ' ').trim();
                 }
 
                 // 基于“用户最新输入为分水岭”的全量无损提取引擎 (从最后一次输入一直提取到页面末尾)
                 // 100% 保证：本轮考点、所有分步推导、公式、易错点完整全量；同时物理隔离上一问与历史，零重复！
                 function extractLatestTurnData() {
-                    // 1. 获取本次输入后新产生的所有 markdown 块 (排除带 data-ds-history 的旧历史)
-                    let newMds = Array.from(document.querySelectorAll('.ds-markdown:not([data-ds-history="true"])'));
+                    // 1. 定位页面上的思考容器
+                    const thinkContainers = Array.from(document.querySelectorAll('[class*="thinking"], [class*="thought"]'));
+                    let lastThinkElem = thinkContainers.length > 0 ? thinkContainers[thinkContainers.length - 1] : null;
+                    let thinkingText = lastThinkElem ? extractMarkdownFromNode(lastThinkElem) : "";
 
-                    // 兜底防御：若首次加载或未标记，取整个页面最后一个助手消息或全部 markdown
-                    if (newMds.length === 0) {
-                        const allMds = Array.from(document.querySelectorAll('.ds-markdown'));
-                        if (allMds.length === 0) return null;
-                        newMds = [allMds[allMds.length - 1]];
+                    // 2. 获取全页面所有的 .ds-markdown 节点
+                    const allMds = Array.from(document.querySelectorAll('.ds-markdown'));
+                    if (allMds.length === 0) return null;
+
+                    // 3. 严格排除属于思考容器内部的 .ds-markdown，锁定全部正文解答块
+                    const contentMds = allMds.filter(md => {
+                        if (lastThinkElem && (lastThinkElem === md || lastThinkElem.contains(md))) {
+                            return false;
+                        }
+                        return true;
+                    });
+
+                    if (contentMds.length === 0) {
+                        return {
+                            thinking: thinkingText.trim(),
+                            markdown: "",
+                            html: "",
+                            plainText: ""
+                        };
                     }
 
-                    // 2. 思考过程：提取属于当前轮次且未归档的思考容器
-                    let thinking = "";
-                    const thinkElem = document.querySelector('[class*="thinking"]:not([data-ds-history="true"]), [class*="thought"]:not([data-ds-history="true"])');
-                    if (thinkElem) {
-                        thinking = extractMarkdownFromNode(thinkElem);
+                    // 4. 定位属于本轮正式回答的所有节点：
+                    // 在 contentMds 中，排除带 data-ds-history="true" 的旧历史
+                    let currentTurnMds = contentMds.filter(md => md.getAttribute('data-ds-history') !== 'true');
+
+                    // 容错兜底：若均为历史或首次加载，直接取 contentMds 中的最后一个（确保拿到全量正文）
+                    if (currentTurnMds.length === 0) {
+                        currentTurnMds = [contentMds[contentMds.length - 1]];
                     }
 
-                    // 3. 正式解答：当前轮次中除思考过程之外的全部 markdown 内容 (全量步骤，绝不漏掉开头或结尾)
-                    const answerMds = newMds.filter(md => !thinkElem || !thinkElem.contains(md));
-
-                    let answerHtml = "";
-                    let answerMarkdown = "";
-                    let plainText = "";
-
-                    if (answerMds.length > 0) {
-                        // 从用户输入结束点一直无缝拼接至末尾，包含全部考点与分步方程！
-                        answerHtml = answerMds.map(md => md.innerHTML).join('<div style="margin:16px 0;border-top:1px dashed #e1e4e8;"></div>');
-                        answerMarkdown = answerMds.map(md => extractMarkdownFromNode(md)).filter(t => t.length > 0).join("\n\n");
-                        plainText = answerMds.map(md => extractPlainTextFromNode(md)).filter(t => t.length > 0).join(" ");
-                    } else {
-                        const fallback = newMds[newMds.length - 1];
-                        answerHtml = fallback.innerHTML;
-                        answerMarkdown = extractMarkdownFromNode(fallback);
-                        plainText = extractPlainTextFromNode(fallback);
-                    }
+                    // 5. 将本轮正文回答的所有 markdown 节点无损全量拼接提取，绝不遗漏后半段
+                    let answerHtml = currentTurnMds.map(md => md.innerHTML).join('<div style="margin:16px 0;border-top:1px dashed #e1e4e8;"></div>');
+                    let answerMarkdown = currentTurnMds.map(md => extractMarkdownFromNode(md)).filter(t => t.length > 0).join("\n\n");
+                    let plainText = currentTurnMds.map(md => extractPlainTextFromNode(md)).filter(t => t.length > 0).join(" ");
 
                     return {
-                        thinking: thinking.trim(),
+                        thinking: thinkingText.trim(),
                         markdown: answerMarkdown.trim(),
                         html: answerHtml.trim(),
                         plainText: plainText.trim()

@@ -117,29 +117,33 @@ class MainActivity : ComponentActivity() {
                                     color = Color(0xFF333333)
                                 )
                                 Spacer(modifier = Modifier.height(6.dp))
-                                Text("💡 提示：若部分手机无法正常访问 GitHub，请点击【🚀 高速下载】通道。", fontSize = 11.sp, color = Color(0xFF2E7D32))
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text("💡 目标文件：StudentReadingAssistant-${updateInfo.latestVersion}.apk", fontSize = 11.sp, color = Color(0xFF1B3B5A), fontWeight = androidx.compose.ui.text.font.FontWeight.Medium)
                             }
                         },
                         confirmButton = {
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                OutlinedButton(
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                TextButton(
                                     onClick = {
-                                        UpdateManager.openDownloadUrl(context, updateInfo.officialDownloadUrl)
+                                        UpdateManager.openDownloadUrl(context, updateInfo.mirrorDownloadUrl.ifBlank { updateInfo.officialDownloadUrl })
                                         vm.dismissUpdateDialog()
                                     }
                                 ) {
-                                    Text("官方源")
+                                    Text("浏览器打开", fontSize = 12.sp)
                                 }
                                 Button(
                                     onClick = {
-                                        UpdateManager.openDownloadUrl(context, updateInfo.mirrorDownloadUrl)
+                                        UpdateManager.downloadLatestApk(context, updateInfo)
                                         vm.dismissUpdateDialog()
                                     },
                                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1B3B5A))
                                 ) {
                                     Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
                                     Spacer(modifier = Modifier.width(4.dp))
-                                    Text("🚀 高速下载")
+                                    Text("🚀 立即下载最新版")
                                 }
                             }
                         },

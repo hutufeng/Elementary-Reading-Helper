@@ -1,8 +1,11 @@
 package com.assistant.reading.core.update
 
+import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Environment
+import android.widget.Toast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -135,6 +138,30 @@ object UpdateManager {
             }
         }
         return 0
+    }
+
+    /**
+     * 使用 Android 系统 DownloadManager 单任务下载最新版 APK (杜绝打开网页导致全部下载)
+     */
+    fun downloadLatestApk(context: Context, updateInfo: UpdateInfo) {
+        val downloadUrl = if (updateInfo.mirrorDownloadUrl.isNotBlank()) updateInfo.mirrorDownloadUrl else updateInfo.officialDownloadUrl
+        val fileName = "StudentReadingAssistant-${updateInfo.latestVersion}.apk"
+
+        try {
+            val request = DownloadManager.Request(Uri.parse(downloadUrl)).apply {
+                setTitle("正在下载最新版 ($fileName)")
+                setDescription("智能伴读助手更新包")
+                setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+                setMimeType("application/vnd.android.package-archive")
+            }
+            val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            manager.enqueue(request)
+            Toast.makeText(context, "已启动最新版本下载 ($fileName)，请在通知栏查看进度", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            // 降级兜底：调用浏览器单次打开直链
+            openDownloadUrl(context, downloadUrl)
+        }
     }
 
     /**
