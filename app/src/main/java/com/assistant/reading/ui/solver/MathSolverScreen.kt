@@ -351,7 +351,7 @@ fun MathSolverScreen(
                                 lineHeight = 18.sp
                             )
                         },
-                        modifier = Modifier.fillMaxWidth().height(110.dp),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 90.dp, max = 180.dp),
                         textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
                     )
 
@@ -679,7 +679,7 @@ fun compressImageToBase64(context: Context, uri: Uri): String? {
         }
         val maxDim = maxOf(options.outWidth, options.outHeight)
         var sampleSize = 1
-        while (maxDim / sampleSize > 2560) {
+        while (maxDim / sampleSize > 1920) {
             sampleSize *= 2
         }
 

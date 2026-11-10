@@ -116,20 +116,31 @@ class MainActivity : ComponentActivity() {
                                     lineHeight = 18.sp,
                                     color = Color(0xFF333333)
                                 )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text("💡 提示：若部分手机无法正常访问 GitHub，请点击【🚀 高速下载】通道。", fontSize = 11.sp, color = Color(0xFF2E7D32))
                             }
                         },
                         confirmButton = {
-                            Button(
-                                onClick = {
-                                    val targetUrl = updateInfo.mirrorDownloadUrl.ifBlank { updateInfo.officialDownloadUrl }
-                                    UpdateManager.openDownloadUrl(context, targetUrl)
-                                    vm.dismissUpdateDialog()
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1B3B5A))
-                            ) {
-                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("立即升级最新版")
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                OutlinedButton(
+                                    onClick = {
+                                        UpdateManager.openDownloadUrl(context, updateInfo.officialDownloadUrl)
+                                        vm.dismissUpdateDialog()
+                                    }
+                                ) {
+                                    Text("官方源")
+                                }
+                                Button(
+                                    onClick = {
+                                        UpdateManager.openDownloadUrl(context, updateInfo.mirrorDownloadUrl)
+                                        vm.dismissUpdateDialog()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1B3B5A))
+                                ) {
+                                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("🚀 高速下载")
+                                }
                             }
                         },
                         dismissButton = {
@@ -170,15 +181,23 @@ class MainActivity : ComponentActivity() {
                         ) {
                             NavigationBarItem(
                                 selected = selectedTab == 0,
-                                onClick = { selectedTab = 0 },
+                                onClick = {
+                                    if (selectedTab != 0) {
+                                        voiceManager.stopSpeaking()
+                                        selectedTab = 0
+                                    }
+                                },
                                 icon = { Icon(Icons.Default.Book, contentDescription = "语文伴读") },
                                 label = { Text("语文伴读", fontSize = 12.sp) }
                             )
                             NavigationBarItem(
                                 selected = selectedTab == 1,
                                 onClick = {
-                                    selectedTab = 1
-                                    bridgeManager.checkLoginStatus(forceReload = false)
+                                    if (selectedTab != 1) {
+                                        voiceManager.stopSpeaking()
+                                        selectedTab = 1
+                                        bridgeManager.checkLoginStatus(forceReload = false)
+                                    }
                                 },
                                 icon = { Icon(Icons.Default.Edit, contentDescription = "理科解题") },
                                 label = { Text("理科解题", fontSize = 12.sp) }
