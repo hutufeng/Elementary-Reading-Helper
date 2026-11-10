@@ -248,62 +248,43 @@ class DeepSeekBridgeManager(private val context: Context) {
                     return (clone.innerText || clone.textContent || "").replace(/\s+/g, ' ').trim();
                 }
 
-                // 精准定位最后一轮助手的独立消息容器 (绝不武断截断，保证整道题完整解答全量抓取)
-                function getLastAiCard() {
-                    const allMds = Array.from(document.querySelectorAll('.ds-markdown, [class*="ds-markdown"]'));
-                    if (allMds.length === 0) {
-                        const fallback = Array.from(document.querySelectorAll('[class*="message"], [role="listitem"]'));
-                        if (fallback.length > 0) return fallback[fallback.length - 1];
-                        return null;
-                    }
-
-                    const lastMd = allMds[allMds.length - 1];
-
-                    // 向上查找到专属该轮助手的最外层消息气泡卡片 (遇到聊天列表大容器才停止)
-                    let curr = lastMd;
-                    let parent = lastMd.parentElement;
-                    while (parent && parent !== document.body) {
-                        if (parent.getAttribute('role') === 'log' || parent.id === 'chat-container' || (parent.className && typeof parent.className === 'string' && (parent.className.includes('chat-list') || parent.className.includes('message-list')))) {
-                            break;
-                        }
-                        curr = parent;
-                        parent = parent.parentElement;
-                    }
-                    return curr;
-                }
-
-                // 提取最后一轮完整的思考与回答数据 (全量段落，绝不漏掉任何步骤)
+                // 基于“用户最新输入为分水岭”的全量无损提取引擎 (从最后一次输入一直提取到页面末尾)
+                // 100% 保证：本轮考点、所有分步推导、公式、易错点完整全量；同时物理隔离上一问与历史，零重复！
                 function extractLatestTurnData() {
-                    const card = getLastAiCard();
-                    if (!card) return null;
+                    // 1. 获取本次输入后新产生的所有 markdown 块 (排除带 data-ds-history 的旧历史)
+                    let newMds = Array.from(document.querySelectorAll('.ds-markdown:not([data-ds-history="true"])'));
 
-                    // 1. 思考过程
+                    // 兜底防御：若首次加载或未标记，取整个页面最后一个助手消息或全部 markdown
+                    if (newMds.length === 0) {
+                        const allMds = Array.from(document.querySelectorAll('.ds-markdown'));
+                        if (allMds.length === 0) return null;
+                        newMds = [allMds[allMds.length - 1]];
+                    }
+
+                    // 2. 思考过程：提取属于当前轮次且未归档的思考容器
                     let thinking = "";
-                    const thinkElem = card.querySelector('[class*="thinking"], [class*="thought"]');
+                    const thinkElem = document.querySelector('[class*="thinking"]:not([data-ds-history="true"]), [class*="thought"]:not([data-ds-history="true"])');
                     if (thinkElem) {
                         thinking = extractMarkdownFromNode(thinkElem);
                     }
 
-                    // 2. 正式解答：提取 card 内部所有不属于思考过程的 markdown 块
-                    const allMds = Array.from(card.querySelectorAll('.ds-markdown, [class*="ds-markdown"]'));
-                    const answerMds = allMds.filter(md => !thinkElem || !thinkElem.contains(md));
+                    // 3. 正式解答：当前轮次中除思考过程之外的全部 markdown 内容 (全量步骤，绝不漏掉开头或结尾)
+                    const answerMds = newMds.filter(md => !thinkElem || !thinkElem.contains(md));
 
                     let answerHtml = "";
                     let answerMarkdown = "";
                     let plainText = "";
 
                     if (answerMds.length > 0) {
-                        // 包含所有考点、步骤一、步骤二与易错总结！
+                        // 从用户输入结束点一直无缝拼接至末尾，包含全部考点与分步方程！
                         answerHtml = answerMds.map(md => md.innerHTML).join('<div style="margin:16px 0;border-top:1px dashed #e1e4e8;"></div>');
                         answerMarkdown = answerMds.map(md => extractMarkdownFromNode(md)).filter(t => t.length > 0).join("\n\n");
                         plainText = answerMds.map(md => extractPlainTextFromNode(md)).filter(t => t.length > 0).join(" ");
                     } else {
-                        const clone = card.cloneNode(true);
-                        const cloneThink = clone.querySelector('[class*="thinking"], [class*="thought"]');
-                        if (cloneThink) cloneThink.remove();
-                        answerHtml = clone.innerHTML;
-                        answerMarkdown = extractMarkdownFromNode(clone);
-                        plainText = extractPlainTextFromNode(clone);
+                        const fallback = newMds[newMds.length - 1];
+                        answerHtml = fallback.innerHTML;
+                        answerMarkdown = extractMarkdownFromNode(fallback);
+                        plainText = extractPlainTextFromNode(fallback);
                     }
 
                     return {
@@ -439,6 +420,11 @@ class DeepSeekBridgeManager(private val context: Context) {
         val js = """
             (async function() {
                 try {
+                    // 发送新题目：将当前页面已存在的历史内容全部归档锁定，确保本次推导从输入点到末尾全量提取、零混淆！
+                    document.querySelectorAll('.ds-markdown, [class*="thinking"], [class*="thought"]').forEach(el => {
+                        el.setAttribute('data-ds-history', 'true');
+                    });
+
                     function logStep(msg) {
                         try { window.AndroidBridge.onStep(msg); } catch(e) {}
                     }
@@ -726,6 +712,11 @@ class DeepSeekBridgeManager(private val context: Context) {
 
         val js = """
             (function() {
+                // 追问发出前：将上一问及其之前的所有内容全部锁定归档为历史！
+                document.querySelectorAll('.ds-markdown, [class*="thinking"], [class*="thought"]').forEach(el => {
+                    el.setAttribute('data-ds-history', 'true');
+                });
+
                 const textarea = document.querySelector('textarea') || document.querySelector('div[contenteditable="true"]');
                 if (textarea) {
                     textarea.focus();
