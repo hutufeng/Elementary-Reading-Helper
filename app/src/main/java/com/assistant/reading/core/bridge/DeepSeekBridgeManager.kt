@@ -26,7 +26,9 @@ enum class SolveStatus {
 data class QaHistoryItem(
     val question: String,
     val thinking: String,
-    val answer: String
+    val answer: String,
+    val answerHtml: String = "",
+    val plainText: String = ""
 )
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -51,6 +53,12 @@ class DeepSeekBridgeManager(private val context: Context) {
 
     private val _currentAnswer = MutableStateFlow("")
     val currentAnswer = _currentAnswer.asStateFlow()
+
+    private val _currentAnswerHtml = MutableStateFlow("")
+    val currentAnswerHtml = _currentAnswerHtml.asStateFlow()
+
+    private val _currentPlainText = MutableStateFlow("")
+    val currentPlainText = _currentPlainText.asStateFlow()
 
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage = _errorMessage.asStateFlow()
@@ -171,7 +179,7 @@ class DeepSeekBridgeManager(private val context: Context) {
     }
 
     /**
-     * 注入 DOM 监听与捕获脚本 (符合 W3C 标准，支持全量提取解题所有段落)
+     * 注入 DOM 监听与捕获脚本 (严格等待推导完成，杜绝半成品公式；精准提取最后一轮问答，杜绝追问重复)
      */
     private fun injectObserverScript() {
         val js = """
@@ -179,11 +187,12 @@ class DeepSeekBridgeManager(private val context: Context) {
                 if (window.__ds_observer_injected) return;
                 window.__ds_observer_injected = true;
 
-                function cleanNodeText(container) {
-                    if (!container) return "";
-                    const clone = container.cloneNode(true);
+                // 提取节点的 Markdown 文本 (规范化 LaTeX 符号，保留段落换行与步骤骨架)
+                function extractMarkdownFromNode(node) {
+                    if (!node) return "";
+                    const clone = node.cloneNode(true);
 
-                    // 预处理 KaTeX 节点：提取原生 TeX 源码，彻底移除引起每个字符换行的 katex-html 结构
+                    // 1. 将 KaTeX 替换为原生 TeX 源码，块级公式用 $$ 包裹，行内公式用 $ 包裹
                     const katexs = Array.from(clone.querySelectorAll('.katex'));
                     katexs.forEach(k => {
                         const ann = k.querySelector('annotation[encoding*="tex"]');
@@ -194,85 +203,167 @@ class DeepSeekBridgeManager(private val context: Context) {
                             tex = (k.textContent || "").replace(/\s+/g, ' ').trim();
                         }
                         const isDisplay = k.classList.contains('katex-display') || k.closest('.katex-display');
-                        const replacement = isDisplay ? ("\n" + tex + "\n") : (" " + tex + " ");
+                        const replacement = isDisplay ? ("\n\n$$ " + tex + " $$\n\n") : (" $" + tex + "$ ");
                         const textNode = document.createTextNode(replacement);
                         if (k.parentNode) {
                             k.parentNode.replaceChild(textNode, k);
                         }
                     });
 
-                    // 移除残留的渲染碎片与按钮
+                    // 2. 清除渲染噪音与交互按键
                     clone.querySelectorAll('.katex-html, .katex-mathml, button, [class*="action"], [class*="feedback"]').forEach(el => el.remove());
 
-                    return (clone.innerText || clone.textContent || "").trim();
+                    // 3. 规范段落与列表换行
+                    clone.querySelectorAll('p').forEach(p => {
+                        p.append(document.createTextNode("\n\n"));
+                    });
+                    clone.querySelectorAll('li').forEach(li => {
+                        li.prepend(document.createTextNode("\n• "));
+                    });
+
+                    let raw = (clone.innerText || clone.textContent || "").trim();
+                    return raw.replace(/\n{3,}/g, '\n\n');
                 }
 
-                function extractFullAiResponse() {
-                    const allMarkdowns = Array.from(document.querySelectorAll('.ds-markdown'));
-                    if (allMarkdowns.length === 0) return null;
+                // 提取供语音朗读的纯文本 (去除公式符号干扰，发音自然)
+                function extractPlainTextFromNode(node) {
+                    if (!node) return "";
+                    const clone = node.cloneNode(true);
+                    const katexs = Array.from(clone.querySelectorAll('.katex'));
+                    katexs.forEach(k => {
+                        const ann = k.querySelector('annotation[encoding*="tex"]');
+                        let tex = (ann && ann.textContent) ? ann.textContent.trim() : (k.textContent || "");
+                        tex = tex.replace(/\\times/g, " 乘以 ")
+                                 .replace(/\\div/g, " 除以 ")
+                                 .replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, " $2分之$1 ")
+                                 .replace(/\\sqrt\{([^{}]+)\}/g, " 根号$1 ")
+                                 .replace(/\\pm/g, " 加减 ")
+                                 .replace(/[\\${}]/g, " ");
+                        const textNode = document.createTextNode(" " + tex + " ");
+                        if (k.parentNode) k.parentNode.replaceChild(textNode, k);
+                    });
+                    clone.querySelectorAll('.katex-html, .katex-mathml, button, [class*="action"]').forEach(el => el.remove());
+                    return (clone.innerText || clone.textContent || "").replace(/\s+/g, ' ').trim();
+                }
 
-                    // 找到最后一个 markdown 所在的整轮消息容器
-                    const lastMd = allMarkdowns[allMarkdowns.length - 1];
-                    let messageRoot = lastMd;
-                    let curr = lastMd.parentElement;
-                    while (curr && curr !== document.body) {
-                        if (curr.querySelectorAll('.ds-markdown').length > 1 || curr.querySelector('[class*="thinking"], [class*="thought"]')) {
-                            messageRoot = curr;
+                // 精准定位最后一轮助手的独立消息容器 (物理隔离上一问与历史问答，彻底杜绝内容重复)
+                function getLastAiCard() {
+                    const allMds = Array.from(document.querySelectorAll('.ds-markdown'));
+                    if (allMds.length === 0) return null;
+
+                    const lastMd = allMds[allMds.length - 1];
+
+                    // 向上查找到专属该轮助手的最外层消息卡片容器
+                    let curr = lastMd;
+                    let parent = lastMd.parentElement;
+                    while (parent && parent !== document.body) {
+                        if (parent.querySelector('[class*="thinking"], [class*="thought"]') && parent.contains(lastMd)) {
+                            curr = parent;
+                            break;
                         }
-                        if (curr.getAttribute('role') === 'log' || curr.id === 'chat-container') break;
-                        curr = curr.parentElement;
+                        if (parent.getAttribute('role') === 'log' || parent.id === 'chat-container' || (parent.className && parent.className.includes('chat-list')) || parent.children.length > 8) {
+                            break;
+                        }
+                        curr = parent;
+                        parent = parent.parentElement;
                     }
+                    return curr;
+                }
 
-                    // 1. 提取思考过程
+                // 提取最后一轮完整的思考与回答数据
+                function extractLatestTurnData() {
+                    const card = getLastAiCard();
+                    if (!card) return null;
+
+                    // 1. 思考过程
                     let thinking = "";
-                    const thinkElem = messageRoot.querySelector('[class*="thinking"], [class*="thought"]');
+                    const thinkElem = card.querySelector('[class*="thinking"], [class*="thought"]');
                     if (thinkElem) {
-                        thinking = cleanNodeText(thinkElem);
+                        thinking = extractMarkdownFromNode(thinkElem);
                     }
 
-                    // 2. 提取完整解答：将所有非思考容器的 markdown 块全部提取拼接，绝不漏掉任何一个步骤！
-                    const answerMds = Array.from(messageRoot.querySelectorAll('.ds-markdown')).filter(md => {
+                    // 2. 正式解答 (严格排除思考过程内部的 markdown，绝不混入)
+                    const answerMds = Array.from(card.querySelectorAll('.ds-markdown')).filter(md => {
                         return !thinkElem || !thinkElem.contains(md);
                     });
 
-                    let fullAnswer = "";
+                    let answerHtml = "";
+                    let answerMarkdown = "";
+                    let plainText = "";
+
                     if (answerMds.length > 0) {
-                        fullAnswer = answerMds.map(md => cleanNodeText(md)).filter(t => t.length > 0).join("\n\n");
+                        answerHtml = answerMds.map(md => md.innerHTML).join('<div style="margin:16px 0;border-top:1px dashed #e1e4e8;"></div>');
+                        answerMarkdown = answerMds.map(md => extractMarkdownFromNode(md)).filter(t => t.length > 0).join("\n\n");
+                        plainText = answerMds.map(md => extractPlainTextFromNode(md)).filter(t => t.length > 0).join(" ");
                     } else {
-                        const clone = messageRoot.cloneNode(true);
+                        const clone = card.cloneNode(true);
                         const cloneThink = clone.querySelector('[class*="thinking"], [class*="thought"]');
                         if (cloneThink) cloneThink.remove();
-                        fullAnswer = cleanNodeText(clone);
+                        answerHtml = clone.innerHTML;
+                        answerMarkdown = extractMarkdownFromNode(clone);
+                        plainText = extractPlainTextFromNode(clone);
                     }
 
                     return {
                         thinking: thinking.trim(),
-                        answer: fullAnswer.trim()
+                        markdown: answerMarkdown.trim(),
+                        html: answerHtml.trim(),
+                        plainText: plainText.trim()
                     };
                 }
 
-                // 监听内容产出
-                const observer = new MutationObserver(() => {
-                    // 1. 检测验证码
+                // 严格等待生成完成状态机与防抖控制器
+                let finishTimer = null;
+                let isObservingGenerating = false;
+
+                function checkStatus() {
+                    // 1. 异常与验证码拦截
                     if (document.querySelector('.cf-turnstile, iframe[src*="cloudflare"], iframe[src*="turnstile"]')) {
                         window.AndroidBridge.onCaptchaDetected();
                         return;
                     }
-
-                    // 2. 检测官方繁忙或错误提示
                     const errorElem = document.querySelector('.ds-error, div[class*="error-message"], [class*="alert-danger"]');
                     if (errorElem && errorElem.innerText && errorElem.innerText.trim()) {
                         window.AndroidBridge.onError(errorElem.innerText.trim());
+                        return;
                     }
 
-                    // 3. 提取全量问答内容
-                    const res = extractFullAiResponse();
-                    if (res && (res.thinking || res.answer)) {
-                        const isGenerating = !!document.querySelector('.ds-typing, [class*="loading"], [class*="generating"], button[aria-label*="停止"]');
-                        window.AndroidBridge.onContentUpdate(res.thinking, res.answer, !isGenerating);
-                    }
-                });
+                    // 2. 判断是否在大模型推导生成中
+                    const stopBtn = document.querySelector('button[aria-label*="停止"], [class*="stop-btn"], div[role="button"][aria-label*="停止"]');
+                    const isTyping = !!document.querySelector('.ds-typing, [class*="typing"]');
+                    const isGenerating = !!(stopBtn || isTyping);
 
+                    if (isGenerating) {
+                        isObservingGenerating = true;
+                        if (finishTimer) {
+                            clearTimeout(finishTimer);
+                            finishTimer = null;
+                        }
+                        // 向原生发送进度状态，但绝不推送残缺的半截推导文本
+                        window.AndroidBridge.onGeneratingProgress("🧠 官方 R1 正在深度思考并严谨推导中...");
+                        return;
+                    }
+
+                    // 3. 从生成中转变为生成完毕，等待 600ms 确认完全稳定后再提取最终数据！
+                    if (isObservingGenerating) {
+                        if (!finishTimer) {
+                            finishTimer = setTimeout(() => {
+                                const stillStop = document.querySelector('button[aria-label*="停止"], [class*="stop-btn"], div[role="button"][aria-label*="停止"]');
+                                const stillTyping = !!document.querySelector('.ds-typing, [class*="typing"]');
+                                if (!stillStop && !stillTyping) {
+                                    isObservingGenerating = false;
+                                    finishTimer = null;
+                                    const data = extractLatestTurnData();
+                                    if (data && (data.markdown || data.html)) {
+                                        window.AndroidBridge.onSolveFinished(data.thinking, data.markdown, data.html, data.plainText);
+                                    }
+                                }
+                            }, 600);
+                        }
+                    }
+                }
+
+                const observer = new MutationObserver(checkStatus);
                 observer.observe(document.body, { childList: true, subtree: true, characterData: true });
             })();
         """.trimIndent()
@@ -298,6 +389,8 @@ class DeepSeekBridgeManager(private val context: Context) {
         _qaHistory.value = emptyList()
         _currentThinking.value = ""
         _currentAnswer.value = ""
+        _currentAnswerHtml.value = ""
+        _currentPlainText.value = ""
         lastSentQuestion = rawProblemText.ifBlank { "【图片题目】" }
         _solveStatus.value = SolveStatus.SOLVING
         _errorMessage.value = null
@@ -551,16 +644,28 @@ class DeepSeekBridgeManager(private val context: Context) {
     fun sendFollowUp(followUpText: String) {
         if (followUpText.isBlank()) return
         
-        // 归档上一问
-        if (_currentAnswer.value.isNotBlank()) {
+        // 归档上一问 (严格去重，仅在历史中未记录该问题时归档，杜绝追问内容重复)
+        if (_currentAnswer.value.isNotBlank() && lastSentQuestion.isNotBlank()) {
             val existing = _qaHistory.value.toMutableList()
-            existing.add(QaHistoryItem(lastSentQuestion, _currentThinking.value, _currentAnswer.value))
-            _qaHistory.value = existing
+            if (existing.none { it.question == lastSentQuestion }) {
+                existing.add(
+                    QaHistoryItem(
+                        question = lastSentQuestion,
+                        thinking = _currentThinking.value,
+                        answer = _currentAnswer.value,
+                        answerHtml = _currentAnswerHtml.value,
+                        plainText = _currentPlainText.value
+                    )
+                )
+                _qaHistory.value = existing
+            }
         }
 
         lastSentQuestion = followUpText
         _currentThinking.value = ""
         _currentAnswer.value = ""
+        _currentAnswerHtml.value = ""
+        _currentPlainText.value = ""
         _solveStatus.value = SolveStatus.SOLVING
         _stepDiagnosis.value = "正在追加追问..."
 
@@ -630,8 +735,11 @@ class DeepSeekBridgeManager(private val context: Context) {
             _solveStatus.value = SolveStatus.IDLE
             _currentThinking.value = ""
             _currentAnswer.value = ""
+            _currentAnswerHtml.value = ""
+            _currentPlainText.value = ""
             _errorMessage.value = null
             _qaHistory.value = emptyList()
+            lastSentQuestion = ""
         }
     }
 
@@ -725,6 +833,24 @@ class DeepSeekBridgeManager(private val context: Context) {
         @JavascriptInterface
         fun onStep(msg: String) {
             _stepDiagnosis.value = msg
+        }
+
+        @JavascriptInterface
+        fun onGeneratingProgress(msg: String) {
+            solveTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+            _solveStatus.value = SolveStatus.SOLVING
+            _stepDiagnosis.value = msg
+        }
+
+        @JavascriptInterface
+        fun onSolveFinished(thinking: String, markdown: String, html: String, plainText: String) {
+            solveTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+            _currentThinking.value = thinking
+            _currentAnswer.value = markdown
+            _currentAnswerHtml.value = html
+            _currentPlainText.value = plainText.ifBlank { markdown }
+            _solveStatus.value = SolveStatus.SUCCESS
+            _stepDiagnosis.value = "推导完成"
         }
 
         @JavascriptInterface

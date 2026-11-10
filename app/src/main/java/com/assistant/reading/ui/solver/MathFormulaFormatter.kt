@@ -9,10 +9,9 @@ object MathFormulaFormatter {
     fun formatMathContent(rawContent: String): String {
         if (rawContent.isBlank()) return ""
 
-        // 0. 优先缝合因 DOM/KaTeX 异常导致的逐字/逐符号换行碎片
-        var text = stitchFragmentedMathLines(rawContent)
+        var text = rawContent
 
-        // 1. 块级公式与行内公式包裹符号清理
+        // 1. 块级公式与行内公式包裹符号清理（保留大模型原始换行骨架）
         text = text.replace(Regex("""\$\$(.*?)\$\$""", RegexOption.DOT_MATCHES_ALL)) { match ->
             "\n" + match.groupValues[1].trim() + "\n"
         }
@@ -34,7 +33,7 @@ object MathFormulaFormatter {
         text = text.replace(Regex("""\\left\."""), "")
         text = text.replace(Regex("""\\right\."""), "")
 
-        // 3. 分数转换 (\frac{a}{b} -> (a)/(b) 或 a/b)
+        // 3. 分数转换 (\frac{a}{b} -> a/b 或 (a)/(b))
         text = text.replace(Regex("""\\(?:frac|dfrac)\{([^{}]+)\}\{([^{}]+)\}""")) { match ->
             val numerator = match.groupValues[1].trim()
             val denominator = match.groupValues[2].trim()
@@ -44,7 +43,6 @@ object MathFormulaFormatter {
                 "($numerator)/($denominator)"
             }
         }
-        // 处理一次嵌套分数
         text = text.replace(Regex("""\\(?:frac|dfrac)\{([^{}]+)\}\{([^{}]+)\}""")) { match ->
             val num = match.groupValues[1].trim()
             val den = match.groupValues[2].trim()
@@ -59,7 +57,6 @@ object MathFormulaFormatter {
         }
 
         // 5. 上下标智能转换 (常用数字与字母转为原生 Unicode 上下标)
-        // 上标
         val superscriptMap = mapOf(
             '0' to '⁰', '1' to '¹', '2' to '²', '3' to '³', '4' to '⁴',
             '5' to '⁵', '6' to '⁶', '7' to '⁷', '8' to '⁸', '9' to '⁹',
@@ -72,7 +69,6 @@ object MathFormulaFormatter {
             superscriptMap[match.groupValues[1][0]]?.toString() ?: match.value
         }
 
-        // 下标
         val subscriptMap = mapOf(
             '0' to '₀', '1' to '₁', '2' to '₂', '3' to '₃', '4' to '₄',
             '5' to '₅', '6' to '₆', '7' to '₇', '8' to '₈', '9' to '₉',
@@ -160,78 +156,11 @@ object MathFormulaFormatter {
             it.groupValues[1] + " "
         }
 
-        // 10. 规范化连续多余空格与换行
+        // 10. 规范化水平空格与极端换行（完全保留大模型原生段落与步骤）
         text = text.replace(Regex("""[ \t]+"""), " ")
         text = text.replace(Regex("""\n{3,}"""), "\n\n")
 
-        // 11. 二次缝合（确保转换后如有残留孤立箭头/等号符号行也能与上下文自然融合）
-        text = stitchFragmentedMathLines(text)
-
         return text.trim()
-    }
-
-    /**
-     * 智能缝合因 DOM/KaTeX 解析异常导致的逐字/逐符号垂直碎行
-     */
-    fun stitchFragmentedMathLines(text: String): String {
-        val lines = text.lines()
-        val result = mutableListOf<String>()
-        val mathFragmentBuffer = mutableListOf<String>()
-
-        fun flushMathBuffer() {
-            if (mathFragmentBuffer.isNotEmpty()) {
-                val stitched = stitchTokens(mathFragmentBuffer)
-                if (stitched.isNotBlank()) {
-                    result.add(stitched)
-                }
-                mathFragmentBuffer.clear()
-            }
-        }
-
-        for (line in lines) {
-            val trimmed = line.trim()
-            if (trimmed.isEmpty()) {
-                flushMathBuffer()
-                result.add("")
-                continue
-            }
-
-            // 判断是否是数学碎片行：
-            // 特征：长度较短 (<= 8)，且不包含任何中文字符，不以中文标点结尾
-            val hasChinese = trimmed.any { it in '\u4e00'..'\u9fa5' }
-            val isMathToken = !hasChinese && trimmed.length <= 8 && !trimmed.endsWith("：") && !trimmed.endsWith(":")
-
-            if (isMathToken) {
-                // 如果遇到推导箭头 "⇒"、"→"，且缓冲区已有内容，作为新推导步骤另起一行
-                if ((trimmed == "⇒" || trimmed == "->" || trimmed == "→") && mathFragmentBuffer.isNotEmpty()) {
-                    flushMathBuffer()
-                }
-                mathFragmentBuffer.add(trimmed)
-            } else {
-                flushMathBuffer()
-                result.add(trimmed)
-            }
-        }
-        flushMathBuffer()
-
-        // 清理由于合并可能产生的多余空行
-        return result.joinToString("\n").replace(Regex("""\n{3,}"""), "\n\n")
-    }
-
-    private fun stitchTokens(tokens: List<String>): String {
-        val sb = StringBuilder()
-        val ops = setOf("=", "⇒", "→", "+", "-", "×", "÷", "*", "/", "≤", "≥", "≠", "≈", "<", ">", "±")
-        for (i in tokens.indices) {
-            val t = tokens[i]
-            if (i > 0) {
-                val prev = tokens[i - 1]
-                if (t in ops || prev in ops) {
-                    sb.append(" ")
-                }
-            }
-            sb.append(t)
-        }
-        return sb.toString().trim()
     }
 }
 

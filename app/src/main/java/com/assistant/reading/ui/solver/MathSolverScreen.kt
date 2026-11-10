@@ -53,6 +53,8 @@ fun MathSolverScreen(
     val solveStatus by bridgeManager.solveStatus.collectAsState()
     val thinkingText by bridgeManager.currentThinking.collectAsState()
     val answerText by bridgeManager.currentAnswer.collectAsState()
+    val answerHtml by bridgeManager.currentAnswerHtml.collectAsState()
+    val plainText by bridgeManager.currentPlainText.collectAsState()
     val errorMessage by bridgeManager.errorMessage.collectAsState()
     val showCaptcha by bridgeManager.showCaptchaDialog.collectAsState()
     val qaHistory by bridgeManager.qaHistory.collectAsState()
@@ -61,6 +63,8 @@ fun MathSolverScreen(
 
     // 0: 📱 原生精读视图, 1: 🌐 官方网页视图
     var currentViewMode by remember { mutableIntStateOf(0) }
+    // 0: 🌐 HTML 富文本排版, 1: 📝 Markdown 纯文本排版
+    var displayMode by remember { mutableIntStateOf(0) }
     var problemText by remember { mutableStateOf("") }
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
     var selectedImageBase64 by remember { mutableStateOf<String?>(null) }
@@ -416,23 +420,33 @@ fun MathSolverScreen(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // 3. 多轮追问历史 (仅在追问时产生)
-            qaHistory.forEachIndexed { index, item ->
-                Card(
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFFEFF3F8))
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text("🙋 追问 ${index + 1}：${item.question}", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color(0xFF1B3B5A))
-                        Divider(modifier = Modifier.padding(vertical = 6.dp))
-                        Text(
-                            text = remember(item.answer) { MathFormulaFormatter.formatMathContent(item.answer) },
-                            fontSize = 13.sp,
-                            lineHeight = 20.sp,
-                            color = Color(0xFF222222)
-                        )
+            // 3. 多轮追问历史 (每轮独立卡片，绝不重复)
+            if (qaHistory.isNotEmpty()) {
+                Text("📚 历史追问记录 (${qaHistory.size} 问)", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1B3B5A))
+                Spacer(modifier = Modifier.height(6.dp))
+                qaHistory.forEachIndexed { index, item ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFFEFF3F8)),
+                        elevation = CardDefaults.cardElevation(1.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text("🙋 第 ${index + 1} 问：${item.question}", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color(0xFF1B3B5A))
+                            Divider(modifier = Modifier.padding(vertical = 6.dp))
+                            if (displayMode == 0 && item.answerHtml.isNotBlank()) {
+                                HtmlAnswerView(htmlContent = item.answerHtml)
+                            } else {
+                                Text(
+                                    text = remember(item.answer) { MathFormulaFormatter.formatMathContent(item.answer) },
+                                    fontSize = 13.sp,
+                                    lineHeight = 20.sp,
+                                    color = Color(0xFF222222)
+                                )
+                            }
+                        }
                     }
                 }
+                Spacer(modifier = Modifier.height(8.dp))
             }
 
             // 4. 当前题目的正式解答与思维链 (唯一主展示区)
@@ -494,15 +508,55 @@ fun MathSolverScreen(
                             Spacer(modifier = Modifier.height(10.dp))
                         }
 
-                        // 正式解答卡片标题与朗读按钮 (支持 播放 / 暂停 / 继续 / 停止)
+                        // 正式解答卡片标题、排版模式切换胶囊与朗读按钮 (支持 播放 / 暂停 / 继续 / 停止)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text("📝 规范解题步骤与答案", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1B3B5A))
-                            if (answerText.isNotBlank()) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
+                            
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                // 🌐 HTML / 📝 Markdown 视图切换胶囊
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = Color(0xFFF1F3F5),
+                                    modifier = Modifier.padding(end = 6.dp)
+                                ) {
+                                    Row(modifier = Modifier.padding(2.dp)) {
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .background(if (displayMode == 0) Color(0xFF1B3B5A) else Color.Transparent)
+                                                .clickable { displayMode = 0 }
+                                                .padding(horizontal = 7.dp, vertical = 3.dp)
+                                        ) {
+                                            Text(
+                                                "🌐 HTML",
+                                                fontSize = 11.sp,
+                                                color = if (displayMode == 0) Color.White else Color(0xFF666666),
+                                                fontWeight = if (displayMode == 0) FontWeight.Bold else FontWeight.Normal
+                                            )
+                                        }
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .background(if (displayMode == 1) Color(0xFF1B3B5A) else Color.Transparent)
+                                                .clickable { displayMode = 1 }
+                                                .padding(horizontal = 7.dp, vertical = 3.dp)
+                                        ) {
+                                            Text(
+                                                "📝 Markdown",
+                                                fontSize = 11.sp,
+                                                color = if (displayMode == 1) Color.White else Color(0xFF666666),
+                                                fontWeight = if (displayMode == 1) FontWeight.Bold else FontWeight.Normal
+                                            )
+                                        }
+                                    }
+                                }
+
+                                if (answerText.isNotBlank()) {
+                                    val textToSpeak = plainText.ifBlank { formattedAnswer }
                                     when (playbackState) {
                                         PlaybackState.PLAYING -> {
                                             IconButton(onClick = { voiceManager.pause() }, modifier = Modifier.size(28.dp)) {
@@ -523,7 +577,7 @@ fun MathSolverScreen(
                                             }
                                         }
                                         PlaybackState.IDLE -> {
-                                            IconButton(onClick = { voiceManager.speak(formattedAnswer) }, modifier = Modifier.size(28.dp)) {
+                                            IconButton(onClick = { voiceManager.speak(textToSpeak) }, modifier = Modifier.size(28.dp)) {
                                                 Icon(Icons.Default.VolumeUp, contentDescription = "朗读答案", modifier = Modifier.size(18.dp))
                                             }
                                         }
@@ -538,15 +592,19 @@ fun MathSolverScreen(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text("正在进行深度推导演算，请稍候...", fontSize = 13.sp, color = Color.Gray)
+                                Text(stepDiagnosis.ifBlank { "正在进行深度推导演算，请稍候..." }, fontSize = 13.sp, color = Color.Gray)
                             }
                         } else {
-                            Text(
-                                text = formattedAnswer,
-                                fontSize = 14.sp,
-                                lineHeight = 22.sp,
-                                color = Color(0xFF222222)
-                            )
+                            if (displayMode == 0 && answerHtml.isNotBlank()) {
+                                HtmlAnswerView(htmlContent = answerHtml)
+                            } else {
+                                Text(
+                                    text = formattedAnswer,
+                                    fontSize = 14.sp,
+                                    lineHeight = 22.sp,
+                                    color = Color(0xFF222222)
+                                )
+                            }
                         }
                     }
                 }
@@ -636,4 +694,72 @@ fun compressImageToBase64(context: Context, uri: Uri): String? {
     } catch (e: Exception) {
         null
     }
+}
+
+/**
+ * 原生内嵌富文本解答容器 (集成 KaTeX 官方样式，公式矢量渲染，排版书本级规范)
+ */
+@Composable
+fun HtmlAnswerView(htmlContent: String, modifier: Modifier = Modifier) {
+    val styledHtml = remember(htmlContent) {
+        """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css">
+            <style>
+                * { box-sizing: border-box; }
+                body {
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+                    font-size: 15px;
+                    line-height: 1.7;
+                    color: #222222;
+                    background-color: transparent;
+                    margin: 0;
+                    padding: 2px;
+                    word-wrap: break-word;
+                }
+                p { margin: 0 0 10px 0; }
+                ul, ol { padding-left: 20px; margin: 0 0 10px 0; }
+                li { margin-bottom: 4px; }
+                .katex-display {
+                    overflow-x: auto;
+                    overflow-y: hidden;
+                    padding: 4px 0;
+                    margin: 6px 0;
+                }
+                .katex {
+                    font-size: 1.05em;
+                }
+                pre, code {
+                    background: #f4f6f8;
+                    border-radius: 4px;
+                    font-family: Consolas, monospace;
+                    padding: 2px 4px;
+                }
+                pre { padding: 8px; overflow-x: auto; }
+            </style>
+        </head>
+        <body>
+            $htmlContent
+        </body>
+        </html>
+        """.trimIndent()
+    }
+
+    AndroidView(
+        modifier = modifier.fillMaxWidth(),
+        factory = { ctx ->
+            WebView(ctx).apply {
+                settings.javaScriptEnabled = false
+                settings.defaultTextEncodingName = "utf-8"
+                setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            }
+        },
+        update = { webView ->
+            webView.loadDataWithBaseURL("https://chat.deepseek.com", styledHtml, "text/html", "utf-8", null)
+        }
+    )
 }
