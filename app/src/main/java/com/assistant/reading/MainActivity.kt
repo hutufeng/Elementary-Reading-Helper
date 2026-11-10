@@ -1,8 +1,6 @@
 package com.assistant.reading
 
-import android.app.Activity
 import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import android.speech.RecognizerIntent
 import android.widget.Toast
@@ -31,16 +29,19 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.assistant.reading.BuildConfig
 import com.assistant.reading.core.ai.AppSettingsManager
+import com.assistant.reading.core.bridge.DeepSeekBridgeManager
 import com.assistant.reading.core.update.UpdateManager
 import com.assistant.reading.core.voice.VoiceManager
 import com.assistant.reading.ui.ReadingSection
 import com.assistant.reading.ui.ReadingViewModel
 import com.assistant.reading.ui.UiChatMessage
+import com.assistant.reading.ui.solver.MathSolverScreen
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var voiceManager: VoiceManager
+    private val bridgeManager by lazy { DeepSeekBridgeManager(this) }
 
     @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -141,29 +142,61 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
+                var selectedTab by remember { mutableIntStateOf(0) }
+
                 Scaffold(
                     topBar = {
                         TopAppBar(
-                            title = { Text("📖 智能阅读伴读助手", fontSize = 18.sp) },
+                            title = {
+                                Text(
+                                    text = if (selectedTab == 0) "📖 语文阅读伴读" else "🧠 理科深度解题 (R1)",
+                                    fontSize = 18.sp
+                                )
+                            },
                             colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFFECE6D8)),
                             actions = {
-                                IconButton(onClick = { vm.changeFontSize(-2) }) { Text("A-") }
-                                IconButton(onClick = { vm.changeFontSize(2) }) { Text("A+") }
+                                if (selectedTab == 0) {
+                                    IconButton(onClick = { vm.changeFontSize(-2) }) { Text("A-") }
+                                    IconButton(onClick = { vm.changeFontSize(2) }) { Text("A+") }
+                                }
                                 IconButton(onClick = { showSettingsDialog = true }) {
                                     Icon(Icons.Default.Settings, contentDescription = "设置")
                                 }
                             }
                         )
+                    },
+                    bottomBar = {
+                        NavigationBar(
+                            containerColor = Color(0xFFECE6D8),
+                            tonalElevation = 8.dp
+                        ) {
+                            NavigationBarItem(
+                                selected = selectedTab == 0,
+                                onClick = { selectedTab = 0 },
+                                icon = { Icon(Icons.Default.MenuBook, contentDescription = "语文伴读") },
+                                label = { Text("语文伴读", fontSize = 12.sp) }
+                            )
+                            NavigationBarItem(
+                                selected = selectedTab == 1,
+                                onClick = {
+                                    selectedTab = 1
+                                    bridgeManager.checkLoginStatus(forceReload = false)
+                                },
+                                icon = { Icon(Icons.Default.Calculate, contentDescription = "理科解题") },
+                                label = { Text("理科解题", fontSize = 12.sp) }
+                            )
+                        }
                     }
                 ) { padding ->
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(Color(0xFFF9F7F1)) // 柔光护眼米色
-                            .padding(padding)
-                            .padding(14.dp)
-                            .verticalScroll(rememberScrollState())
-                    ) {
+                    if (selectedTab == 0) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color(0xFFF9F7F1)) // 柔光护眼米色
+                                .padding(padding)
+                                .padding(14.dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
                         // 1. 顶部全能快捷操作条
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -393,6 +426,13 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         }
+                    } else {
+                        // 选项卡 2：理科深度解题 (内置 DeepSeek-R1 满血图文推理)
+                        MathSolverScreen(
+                            bridgeManager = bridgeManager,
+                            voiceManager = voiceManager,
+                            modifier = Modifier.padding(padding)
+                        )
                     }
                 }
 
@@ -617,6 +657,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         voiceManager.destroy()
+        bridgeManager.destroy()
     }
 }
 
