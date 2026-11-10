@@ -37,6 +37,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.assistant.reading.core.bridge.AuthStatus
 import com.assistant.reading.core.bridge.DeepSeekBridgeManager
 import com.assistant.reading.core.bridge.SolveStatus
+import com.assistant.reading.core.voice.PlaybackState
 import com.assistant.reading.core.voice.VoiceManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -56,6 +57,7 @@ fun MathSolverScreen(
     val showCaptcha by bridgeManager.showCaptchaDialog.collectAsState()
     val qaHistory by bridgeManager.qaHistory.collectAsState()
     val stepDiagnosis by bridgeManager.stepDiagnosis.collectAsState()
+    val playbackState by voiceManager.playbackState.collectAsState()
 
     // 0: 📱 原生精读视图, 1: 🌐 官方网页视图
     var currentViewMode by remember { mutableIntStateOf(0) }
@@ -492,7 +494,7 @@ fun MathSolverScreen(
                             Spacer(modifier = Modifier.height(10.dp))
                         }
 
-                        // 正式解答卡片标题与朗读按钮
+                        // 正式解答卡片标题与朗读按钮 (支持 播放 / 暂停 / 继续 / 停止)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -500,8 +502,32 @@ fun MathSolverScreen(
                         ) {
                             Text("📝 规范解题步骤与答案", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1B3B5A))
                             if (answerText.isNotBlank()) {
-                                IconButton(onClick = { voiceManager.speak(formattedAnswer) }) {
-                                    Icon(Icons.Default.VolumeUp, contentDescription = "朗读答案", modifier = Modifier.size(18.dp))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    when (playbackState) {
+                                        PlaybackState.PLAYING -> {
+                                            IconButton(onClick = { voiceManager.pause() }, modifier = Modifier.size(28.dp)) {
+                                                Icon(Icons.Default.Pause, contentDescription = "暂停朗读", tint = Color(0xFFD97706), modifier = Modifier.size(18.dp))
+                                            }
+                                            Spacer(modifier = Modifier.width(2.dp))
+                                            IconButton(onClick = { voiceManager.stopSpeaking() }, modifier = Modifier.size(28.dp)) {
+                                                Icon(Icons.Default.Stop, contentDescription = "停止朗读", tint = Color.Red, modifier = Modifier.size(18.dp))
+                                            }
+                                        }
+                                        PlaybackState.PAUSED -> {
+                                            IconButton(onClick = { voiceManager.resume() }, modifier = Modifier.size(28.dp)) {
+                                                Icon(Icons.Default.PlayArrow, contentDescription = "继续朗读", tint = Color(0xFF2E7D32), modifier = Modifier.size(18.dp))
+                                            }
+                                            Spacer(modifier = Modifier.width(2.dp))
+                                            IconButton(onClick = { voiceManager.stopSpeaking() }, modifier = Modifier.size(28.dp)) {
+                                                Icon(Icons.Default.Stop, contentDescription = "停止朗读", tint = Color.Red, modifier = Modifier.size(18.dp))
+                                            }
+                                        }
+                                        PlaybackState.IDLE -> {
+                                            IconButton(onClick = { voiceManager.speak(formattedAnswer) }, modifier = Modifier.size(28.dp)) {
+                                                Icon(Icons.Default.VolumeUp, contentDescription = "朗读答案", modifier = Modifier.size(18.dp))
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }

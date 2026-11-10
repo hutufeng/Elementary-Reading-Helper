@@ -33,6 +33,7 @@ import com.assistant.reading.BuildConfig
 import com.assistant.reading.core.ai.AppSettingsManager
 import com.assistant.reading.core.bridge.DeepSeekBridgeManager
 import com.assistant.reading.core.update.UpdateManager
+import com.assistant.reading.core.voice.PlaybackState
 import com.assistant.reading.core.voice.VoiceManager
 import com.assistant.reading.ui.ReadingSection
 import com.assistant.reading.ui.ReadingViewModel
@@ -55,6 +56,7 @@ class MainActivity : ComponentActivity() {
                 val vm: ReadingViewModel = viewModel()
                 val uiState by vm.uiState.collectAsState()
                 val context = LocalContext.current
+                val playbackState by voiceManager.playbackState.collectAsState()
                 var showSettingsDialog by remember { mutableStateOf(false) }
 
                 // 同步当前语速到 VoiceManager
@@ -229,20 +231,47 @@ class MainActivity : ComponentActivity() {
                                 Text("拍书籍")
                             }
 
-                            Button(
-                                onClick = {
-                                    val textToRead = uiState.readingResult.ifBlank { uiState.inputText }
-                                    voiceManager.speak(textToRead)
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF436077))
-                            ) {
-                                Icon(Icons.Default.VolumeUp, null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text("朗读全文")
-                            }
-
-                            IconButton(onClick = { voiceManager.stopSpeaking() }) {
-                                Icon(Icons.Default.Stop, null)
+                            // 朗读全文 / 暂停 / 继续 控制按钮
+                            when (playbackState) {
+                                PlaybackState.PLAYING -> {
+                                    Button(
+                                        onClick = { voiceManager.pause() },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706))
+                                    ) {
+                                        Icon(Icons.Default.Pause, null, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("暂停朗读")
+                                    }
+                                    IconButton(onClick = { voiceManager.stopSpeaking() }) {
+                                        Icon(Icons.Default.Stop, null, tint = Color.Red)
+                                    }
+                                }
+                                PlaybackState.PAUSED -> {
+                                    Button(
+                                        onClick = { voiceManager.resume() },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
+                                    ) {
+                                        Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("继续朗读")
+                                    }
+                                    IconButton(onClick = { voiceManager.stopSpeaking() }) {
+                                        Icon(Icons.Default.Stop, null, tint = Color.Red)
+                                    }
+                                }
+                                PlaybackState.IDLE -> {
+                                    Button(
+                                        onClick = {
+                                            val textToRead = uiState.readingResult.ifBlank { uiState.inputText }
+                                            voiceManager.speak(textToRead)
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF436077))
+                                    ) {
+                                        Icon(Icons.Default.VolumeUp, null, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("朗读全文")
+                                    }
+                                }
                             }
                         }
 

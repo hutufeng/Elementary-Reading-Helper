@@ -1,20 +1,68 @@
 package com.assistant.reading.core.voice
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.util.Locale
+
+enum class PlaybackState {
+    IDLE,       // 空闲
+    PLAYING,    // 正在朗读
+    PAUSED      // 已暂停 (保留断点)
+}
 
 class VoiceManager(context: Context) : TextToSpeech.OnInitListener {
 
     private var tts: TextToSpeech? = TextToSpeech(context, this)
     private var isReady = false
     private var currentRate: Float = 0.88f
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private val _playbackState = MutableStateFlow(PlaybackState.IDLE)
+    val playbackState = _playbackState.asStateFlow()
+
+    private var sentences: List<String> = emptyList()
+    private var currentSentenceIndex: Int = 0
 
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
             val res = tts?.setLanguage(Locale.CHINESE)
             isReady = res != TextToSpeech.LANG_MISSING_DATA && res != TextToSpeech.LANG_NOT_SUPPORTED
             tts?.setSpeechRate(currentRate)
+
+            tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) {
+                    mainHandler.post {
+                        if (_playbackState.value != PlaybackState.PAUSED) {
+                            _playbackState.value = PlaybackState.PLAYING
+                        }
+                    }
+                }
+
+                override fun onDone(utteranceId: String?) {
+                    mainHandler.post {
+                        if (_playbackState.value == PlaybackState.PLAYING) {
+                            currentSentenceIndex++
+                            if (currentSentenceIndex < sentences.size) {
+                                playNextSentence()
+                            } else {
+                                _playbackState.value = PlaybackState.IDLE
+                                currentSentenceIndex = 0
+                            }
+                        }
+                    }
+                }
+
+                override fun onError(utteranceId: String?) {
+                    mainHandler.post {
+                        _playbackState.value = PlaybackState.IDLE
+                    }
+                }
+            })
         }
     }
 
@@ -31,27 +79,79 @@ class VoiceManager(context: Context) : TextToSpeech.OnInitListener {
     fun getSpeechRate(): Float = currentRate
 
     /**
-     * 朗读指定段落文本 (自动净化 Markdown 标签，避免读出星号或井号)
+     * 从头开始朗读指定段落文本 (支持断点切句记忆)
      */
     fun speak(text: String) {
         val cleanText = cleanMarkdownForSpeech(text)
-        if (isReady && cleanText.isNotBlank()) {
-            tts?.stop()
+        if (cleanText.isBlank()) return
+
+        stopSpeaking()
+        sentences = splitIntoSentences(cleanText)
+        currentSentenceIndex = 0
+
+        if (isReady && sentences.isNotEmpty()) {
             tts?.setSpeechRate(currentRate)
-            tts?.speak(cleanText, TextToSpeech.QUEUE_FLUSH, null, "reading_tts_${System.currentTimeMillis()}")
+            _playbackState.value = PlaybackState.PLAYING
+            playNextSentence()
         }
     }
 
     /**
-     * 停止当前朗读
+     * 暂停当前朗读 (记录已读到的分句断点)
+     */
+    fun pause() {
+        if (_playbackState.value == PlaybackState.PLAYING) {
+            _playbackState.value = PlaybackState.PAUSED
+            tts?.stop()
+        }
+    }
+
+    /**
+     * 从暂停处继续朗读
+     */
+    fun resume() {
+        if (_playbackState.value == PlaybackState.PAUSED && isReady) {
+            _playbackState.value = PlaybackState.PLAYING
+            tts?.setSpeechRate(currentRate)
+            playNextSentence()
+        }
+    }
+
+    /**
+     * 停止朗读并复位状态
      */
     fun stopSpeaking() {
+        _playbackState.value = PlaybackState.IDLE
+        currentSentenceIndex = 0
+        sentences = emptyList()
         tts?.stop()
     }
 
+    private fun playNextSentence() {
+        if (currentSentenceIndex < sentences.size) {
+            val sentence = sentences[currentSentenceIndex]
+            tts?.speak(sentence, TextToSpeech.QUEUE_FLUSH, null, "voice_utterance_${currentSentenceIndex}_${System.currentTimeMillis()}")
+        } else {
+            _playbackState.value = PlaybackState.IDLE
+            currentSentenceIndex = 0
+        }
+    }
+
+    /**
+     * 将长文本切分为适合 TTS 朗读与断点记忆的句子序列
+     */
+    private fun splitIntoSentences(text: String): List<String> {
+        val regex = Regex("(?<=[。！？!?；;\n])")
+        return text.split(regex)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+    }
+
     fun destroy() {
+        mainHandler.removeCallbacksAndMessages(null)
         tts?.stop()
         tts?.shutdown()
+        _playbackState.value = PlaybackState.IDLE
     }
 
     companion object {
