@@ -76,15 +76,12 @@ jobs:
       env:
         ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
       run: |
+        set -eo pipefail
         echo ">>> 开始编译 APK (版本名: ${{ steps.ver.outputs.clean_version }}, 版本号: ${{ steps.ver.outputs.version_code }})..."
         ./gradlew assembleRelease \
           -PversionCode=${{ steps.ver.outputs.version_code }} \
           -PversionName=${{ steps.ver.outputs.clean_version }} \
-          --no-daemon --stacktrace 2>&1 | tee build_output.log || {
-            echo "==================== BUILD FAILED DIAGNOSTICS ===================="
-            grep -E "e: |Caused by:|FAILURE:|BUILD FAILED" build_output.log || tail -n 120 build_output.log
-            exit 1
-          }
+          --no-daemon --stacktrace
 
     - name: 规整并重命名 APK 产物
       run: |
