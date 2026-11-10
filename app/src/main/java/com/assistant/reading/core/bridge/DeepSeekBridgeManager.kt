@@ -179,6 +179,34 @@ class DeepSeekBridgeManager(private val context: Context) {
                 if (window.__ds_observer_injected) return;
                 window.__ds_observer_injected = true;
 
+                function cleanNodeText(container) {
+                    if (!container) return "";
+                    const clone = container.cloneNode(true);
+
+                    // 预处理 KaTeX 节点：提取原生 TeX 源码，彻底移除引起每个字符换行的 katex-html 结构
+                    const katexs = Array.from(clone.querySelectorAll('.katex'));
+                    katexs.forEach(k => {
+                        const ann = k.querySelector('annotation[encoding*="tex"]');
+                        let tex = "";
+                        if (ann && ann.textContent) {
+                            tex = ann.textContent.trim();
+                        } else {
+                            tex = (k.textContent || "").replace(/\s+/g, ' ').trim();
+                        }
+                        const isDisplay = k.classList.contains('katex-display') || k.closest('.katex-display');
+                        const replacement = isDisplay ? ("\n" + tex + "\n") : (" " + tex + " ");
+                        const textNode = document.createTextNode(replacement);
+                        if (k.parentNode) {
+                            k.parentNode.replaceChild(textNode, k);
+                        }
+                    });
+
+                    // 移除残留的渲染碎片与按钮
+                    clone.querySelectorAll('.katex-html, .katex-mathml, button, [class*="action"], [class*="feedback"]').forEach(el => el.remove());
+
+                    return (clone.innerText || clone.textContent || "").trim();
+                }
+
                 function extractFullAiResponse() {
                     const allMarkdowns = Array.from(document.querySelectorAll('.ds-markdown'));
                     if (allMarkdowns.length === 0) return null;
@@ -199,7 +227,7 @@ class DeepSeekBridgeManager(private val context: Context) {
                     let thinking = "";
                     const thinkElem = messageRoot.querySelector('[class*="thinking"], [class*="thought"]');
                     if (thinkElem) {
-                        thinking = thinkElem.innerText || "";
+                        thinking = cleanNodeText(thinkElem);
                     }
 
                     // 2. 提取完整解答：将所有非思考容器的 markdown 块全部提取拼接，绝不漏掉任何一个步骤！
@@ -209,14 +237,12 @@ class DeepSeekBridgeManager(private val context: Context) {
 
                     let fullAnswer = "";
                     if (answerMds.length > 0) {
-                        fullAnswer = answerMds.map(md => (md.innerText || "").trim()).filter(t => t.length > 0).join("\n\n");
+                        fullAnswer = answerMds.map(md => cleanNodeText(md)).filter(t => t.length > 0).join("\n\n");
                     } else {
                         const clone = messageRoot.cloneNode(true);
                         const cloneThink = clone.querySelector('[class*="thinking"], [class*="thought"]');
                         if (cloneThink) cloneThink.remove();
-                        const cloneBtns = clone.querySelectorAll('button, [class*="action"]');
-                        cloneBtns.forEach(b => b.remove());
-                        fullAnswer = clone.innerText || "";
+                        fullAnswer = cleanNodeText(clone);
                     }
 
                     return {
