@@ -174,6 +174,7 @@ class DeepSeekBridgeManager(private val context: Context) {
             })();
         """.trimIndent()
         mainHandler.post {
+            webView.resumeTimers()
             webView.evaluateJavascript(js, null)
         }
     }
@@ -247,9 +248,9 @@ class DeepSeekBridgeManager(private val context: Context) {
                     return (clone.innerText || clone.textContent || "").replace(/\s+/g, ' ').trim();
                 }
 
-                // 精准定位最后一轮助手的独立消息容器 (支持移动端多种类名，彻底杜绝内容重复)
+                // 精准定位最后一轮助手的独立消息容器 (绝不武断截断，保证整道题完整解答全量抓取)
                 function getLastAiCard() {
-                    const allMds = Array.from(document.querySelectorAll('.ds-markdown, [class*="ds-markdown"], [class*="markdown"], .chat-content, .message-content, [data-role="assistant"]'));
+                    const allMds = Array.from(document.querySelectorAll('.ds-markdown, [class*="ds-markdown"]'));
                     if (allMds.length === 0) {
                         const fallback = Array.from(document.querySelectorAll('[class*="message"], [role="listitem"]'));
                         if (fallback.length > 0) return fallback[fallback.length - 1];
@@ -258,15 +259,11 @@ class DeepSeekBridgeManager(private val context: Context) {
 
                     const lastMd = allMds[allMds.length - 1];
 
-                    // 向上查找到专属该轮助手的最外层消息卡片容器
+                    // 向上查找到专属该轮助手的最外层消息气泡卡片 (遇到聊天列表大容器才停止)
                     let curr = lastMd;
                     let parent = lastMd.parentElement;
                     while (parent && parent !== document.body) {
-                        if (parent.querySelector('[class*="thinking"], [class*="thought"]') && parent.contains(lastMd)) {
-                            curr = parent;
-                            break;
-                        }
-                        if (parent.getAttribute('role') === 'log' || parent.id === 'chat-container' || (parent.className && typeof parent.className === 'string' && parent.className.includes('chat-list')) || parent.children.length > 8) {
+                        if (parent.getAttribute('role') === 'log' || parent.id === 'chat-container' || (parent.className && typeof parent.className === 'string' && (parent.className.includes('chat-list') || parent.className.includes('message-list')))) {
                             break;
                         }
                         curr = parent;
@@ -275,7 +272,7 @@ class DeepSeekBridgeManager(private val context: Context) {
                     return curr;
                 }
 
-                // 提取最后一轮完整的思考与回答数据
+                // 提取最后一轮完整的思考与回答数据 (全量段落，绝不漏掉任何步骤)
                 function extractLatestTurnData() {
                     const card = getLastAiCard();
                     if (!card) return null;
@@ -287,16 +284,16 @@ class DeepSeekBridgeManager(private val context: Context) {
                         thinking = extractMarkdownFromNode(thinkElem);
                     }
 
-                    // 2. 正式解答 (严格排除思考过程内部的 markdown，绝不混入)
-                    const answerMds = Array.from(card.querySelectorAll('.ds-markdown, [class*="markdown"]')).filter(md => {
-                        return !thinkElem || !thinkElem.contains(md);
-                    });
+                    // 2. 正式解答：提取 card 内部所有不属于思考过程的 markdown 块
+                    const allMds = Array.from(card.querySelectorAll('.ds-markdown, [class*="ds-markdown"]'));
+                    const answerMds = allMds.filter(md => !thinkElem || !thinkElem.contains(md));
 
                     let answerHtml = "";
                     let answerMarkdown = "";
                     let plainText = "";
 
                     if (answerMds.length > 0) {
+                        // 包含所有考点、步骤一、步骤二与易错总结！
                         answerHtml = answerMds.map(md => md.innerHTML).join('<div style="margin:16px 0;border-top:1px dashed #e1e4e8;"></div>');
                         answerMarkdown = answerMds.map(md => extractMarkdownFromNode(md)).filter(t => t.length > 0).join("\n\n");
                         plainText = answerMds.map(md => extractPlainTextFromNode(md)).filter(t => t.length > 0).join(" ");
@@ -387,6 +384,7 @@ class DeepSeekBridgeManager(private val context: Context) {
             })();
         """.trimIndent()
         mainHandler.post {
+            webView.resumeTimers()
             webView.evaluateJavascript(js, null)
         }
     }
@@ -648,6 +646,7 @@ class DeepSeekBridgeManager(private val context: Context) {
         """.trimIndent()
 
         mainHandler.post {
+            webView.resumeTimers()
             webView.evaluateJavascript(js, null)
         }
     }
@@ -756,6 +755,7 @@ class DeepSeekBridgeManager(private val context: Context) {
         """.trimIndent()
 
         mainHandler.post {
+            webView.resumeTimers()
             webView.evaluateJavascript(js, null)
         }
     }

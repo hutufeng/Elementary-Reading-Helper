@@ -127,15 +127,36 @@ fun MathSolverScreen(
         )
     }
 
-    if (currentViewMode == 1) {
-        // ================= 视图 2：🌐 官方网页原生承载视图 =================
-        Column(modifier = modifier.fillMaxSize().background(Color.White)) {
-            // 网页端原生操作工具栏
+    Box(modifier = modifier.fillMaxSize()) {
+        // ================= 常驻底层挂载官方 WebView =================
+        // 核心技术保障：始终保持 Attached to Window，彻底根除 Chromium 内核后台休眠与定时器节流
+        // 在原生精读模式下以 1px 挂载运行，推导完毕自动秒级回调，绝不再需要用户手动切进网页触发！
+        Box(
+            modifier = if (currentViewMode == 1) Modifier.fillMaxSize().padding(top = 46.dp) else Modifier.size(1.dp).alpha(0.001f)
+        ) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = {
+                    bridgeManager.webView.apply {
+                        (parent as? ViewGroup)?.removeView(this)
+                        layoutParams = FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                    }
+                }
+            )
+        }
+
+        if (currentViewMode == 1) {
+            // ================= 视图 2：🌐 官方网页顶部悬浮工具栏 =================
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .height(46.dp)
                     .background(Color(0xFF1B3B5A))
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                    .align(Alignment.TopCenter),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
@@ -165,29 +186,12 @@ fun MathSolverScreen(
                     }
                 }
             }
-
-            // 官方网页渲染容器
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                AndroidView(
-                    modifier = Modifier.fillMaxSize(),
-                    factory = {
-                        bridgeManager.webView.apply {
-                            (parent as? ViewGroup)?.removeView(this)
-                            layoutParams = FrameLayout.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                ViewGroup.LayoutParams.MATCH_PARENT
-                            )
-                        }
-                    }
-                )
-            }
-        }
-    } else {
-        // ================= 视图 1：📱 原生精读视图 =================
-        Column(
-            modifier = modifier
-                .fillMaxSize()
-                .background(Color(0xFFF6F8FA))
+        } else {
+            // ================= 视图 1：📱 原生精读主视图 =================
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFFF6F8FA))
                 .padding(14.dp)
                 .verticalScroll(rememberScrollState())
         ) {
@@ -652,6 +656,7 @@ fun MathSolverScreen(
             }
         }
     }
+}
 }
 
 // 辅助：从本地 Uri 加载 ImageBitmap
