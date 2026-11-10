@@ -223,6 +223,27 @@ fun MathSolverScreen(
                         }
 
                         Row(verticalAlignment = Alignment.CenterVertically) {
+                            // 开启新一题 (隔离上下文)
+                            Button(
+                                onClick = {
+                                    problemText = ""
+                                    selectedImageUri = null
+                                    selectedImageBase64 = null
+                                    followUpQuestion = ""
+                                    bridgeManager.startNewChat()
+                                    Toast.makeText(context, "已开启全新题目，上下文已重置！", Toast.LENGTH_SHORT).show()
+                                },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                modifier = Modifier.height(30.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2C6454))
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(13.dp))
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Text("新题目", fontSize = 11.sp)
+                            }
+
+                            Spacer(modifier = Modifier.width(6.dp))
+
                             // 一键切换至官方网页
                             OutlinedButton(
                                 onClick = { currentViewMode = 1 },
@@ -230,15 +251,6 @@ fun MathSolverScreen(
                                 modifier = Modifier.height(30.dp)
                             ) {
                                 Text("🌐 官方网页", fontSize = 11.sp, color = Color(0xFF1B3B5A))
-                            }
-
-                            Spacer(modifier = Modifier.width(4.dp))
-
-                            IconButton(
-                                onClick = { bridgeManager.startNewChat() },
-                                modifier = Modifier.size(30.dp)
-                            ) {
-                                Icon(Icons.Default.Add, contentDescription = "新一题", modifier = Modifier.size(16.dp))
                             }
                         }
                     }
@@ -402,22 +414,30 @@ fun MathSolverScreen(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // 3. 多轮问答历史
+            // 3. 多轮追问历史 (仅在追问时产生)
             qaHistory.forEachIndexed { index, item ->
                 Card(
                     modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
                     colors = CardDefaults.cardColors(containerColor = Color(0xFFEFF3F8))
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
-                        Text("🙋 第 ${index + 1} 问：${item.question}", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color(0xFF1B3B5A))
+                        Text("🙋 追问 ${index + 1}：${item.question}", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color(0xFF1B3B5A))
                         Divider(modifier = Modifier.padding(vertical = 6.dp))
-                        Text(item.answer, fontSize = 13.sp, lineHeight = 20.sp, color = Color(0xFF222222))
+                        Text(
+                            text = remember(item.answer) { MathFormulaFormatter.formatMathContent(item.answer) },
+                            fontSize = 13.sp,
+                            lineHeight = 20.sp,
+                            color = Color(0xFF222222)
+                        )
                     }
                 }
             }
 
-            // 4. 当前正在推导中的结果展示
+            // 4. 当前题目的正式解答与思维链 (唯一主展示区)
             if (solveStatus == SolveStatus.SOLVING || answerText.isNotBlank()) {
+                val formattedAnswer = remember(answerText) { MathFormulaFormatter.formatMathContent(answerText) }
+                val formattedThinking = remember(thinkingText) { MathFormulaFormatter.formatMathContent(thinkingText) }
+
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -440,7 +460,12 @@ fun MathSolverScreen(
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Text("🧠 深度推导逻辑链 (思维过程)", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF4A6572))
+                                            Text(
+                                                text = if (isThinkingExpanded) "🧠 深度推导逻辑链 (点击收起)" else "🧠 深度推导逻辑链 (点击展开)",
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = Color(0xFF4A6572)
+                                            )
                                             if (solveStatus == SolveStatus.SOLVING && answerText.isBlank()) {
                                                 Spacer(modifier = Modifier.width(6.dp))
                                                 CircularProgressIndicator(modifier = Modifier.size(10.dp), strokeWidth = 1.5.dp)
@@ -456,9 +481,9 @@ fun MathSolverScreen(
                                     if (isThinkingExpanded) {
                                         Spacer(modifier = Modifier.height(6.dp))
                                         Text(
-                                            text = thinkingText,
-                                            fontSize = 11.sp,
-                                            lineHeight = 16.sp,
+                                            text = formattedThinking,
+                                            fontSize = 12.sp,
+                                            lineHeight = 18.sp,
                                             color = Color(0xFF555555)
                                         )
                                     }
@@ -475,7 +500,7 @@ fun MathSolverScreen(
                         ) {
                             Text("📝 规范解题步骤与答案", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1B3B5A))
                             if (answerText.isNotBlank()) {
-                                IconButton(onClick = { voiceManager.speak(answerText) }) {
+                                IconButton(onClick = { voiceManager.speak(formattedAnswer) }) {
                                     Icon(Icons.Default.VolumeUp, contentDescription = "朗读答案", modifier = Modifier.size(18.dp))
                                 }
                             }
@@ -487,11 +512,11 @@ fun MathSolverScreen(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text("正在进行全推导演算，请稍候...", fontSize = 13.sp, color = Color.Gray)
+                                Text("正在进行深度推导演算，请稍候...", fontSize = 13.sp, color = Color.Gray)
                             }
                         } else {
                             Text(
-                                text = answerText,
+                                text = formattedAnswer,
                                 fontSize = 14.sp,
                                 lineHeight = 22.sp,
                                 color = Color(0xFF222222)
