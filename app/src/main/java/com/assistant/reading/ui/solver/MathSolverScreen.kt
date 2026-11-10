@@ -4,7 +4,10 @@ import android.content.Context
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Base64
+import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -30,6 +33,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import com.assistant.reading.core.bridge.AuthStatus
 import com.assistant.reading.core.bridge.DeepSeekBridgeManager
 import com.assistant.reading.core.bridge.SolveStatus
@@ -51,14 +55,25 @@ fun MathSolverScreen(
     val errorMessage by bridgeManager.errorMessage.collectAsState()
     val showCaptcha by bridgeManager.showCaptchaDialog.collectAsState()
     val qaHistory by bridgeManager.qaHistory.collectAsState()
+    val stepDiagnosis by bridgeManager.stepDiagnosis.collectAsState()
 
-    var showLoginDialog by remember { mutableStateOf(false) }
+    // 0: 📱 原生精读视图, 1: 🌐 官方网页视图
+    var currentViewMode by remember { mutableIntStateOf(0) }
     var problemText by remember { mutableStateOf("") }
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
     var selectedImageBase64 by remember { mutableStateOf<String?>(null) }
     var enableR1 by remember { mutableStateOf(true) }
     var isThinkingExpanded by remember { mutableStateOf(false) }
     var followUpQuestion by remember { mutableStateOf("") }
+
+    // 拦截物理返回键：若在网页视图，优先后退网页，到底切回原生精读
+    BackHandler(enabled = currentViewMode == 1) {
+        if (bridgeManager.webView.canGoBack()) {
+            bridgeManager.webView.goBack()
+        } else {
+            currentViewMode = 0
+        }
+    }
 
     // 图片选取器 (带采样防 OOM 压缩)
     val imgPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
@@ -80,28 +95,20 @@ fun MathSolverScreen(
         }
     }
 
-    // 全屏登录弹窗
-    if (showLoginDialog || authStatus == AuthStatus.NOT_LOGGED_IN) {
-        DeepSeekLoginDialog(
-            bridgeManager = bridgeManager,
-            onDismiss = { showLoginDialog = false }
-        )
-    }
-
     // 验证码半屏天窗
     if (showCaptcha) {
         AlertDialog(
             onDismissRequest = { bridgeManager.dismissCaptcha() },
             title = { Text("⚠️ 需要进行安全验证", fontSize = 16.sp, fontWeight = FontWeight.Bold) },
             text = {
-                Text("官方网页正在请求人机验证，点击下方按钮将打开验证天窗，滑动滑块完成后即可自动继续解题。")
+                Text("官方网页正在请求人机验证，点击下方按钮将直接切换至【官方网页】，滑动滑块完成后即可自动继续解题。")
             },
             confirmButton = {
                 Button(onClick = {
                     bridgeManager.dismissCaptcha()
-                    showLoginDialog = true
+                    currentViewMode = 1
                 }) {
-                    Text("打开验证天窗")
+                    Text("前往网页滑动验证")
                 }
             },
             dismissButton = {
@@ -112,318 +119,423 @@ fun MathSolverScreen(
         )
     }
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .background(Color(0xFFF6F8FA))
-            .padding(14.dp)
-            .verticalScroll(rememberScrollState())
-    ) {
-        // 1. 顶部状态栏与账号管理卡片
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
-            elevation = CardDefaults.cardElevation(1.dp)
-        ) {
+    if (currentViewMode == 1) {
+        // ================= 视图 2：🌐 官方网页原生承载视图 =================
+        Column(modifier = modifier.fillMaxSize().background(Color.White)) {
+            // 网页端原生操作工具栏
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                    .background(Color(0xFF1B3B5A))
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    val dotColor = when (authStatus) {
-                        AuthStatus.LOGGED_IN -> Color(0xFF4CAF50)
-                        AuthStatus.CHECKING -> Color(0xFFFFA000)
-                        AuthStatus.NOT_LOGGED_IN -> Color(0xFFE53935)
-                    }
-                    Box(
-                        modifier = Modifier
-                            .size(10.dp)
-                            .background(dotColor, RoundedCornerShape(5.dp))
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = when (authStatus) {
-                            AuthStatus.LOGGED_IN -> "DeepSeek-R1 官方满血推理已就绪"
-                            AuthStatus.CHECKING -> "正在校验登录状态..."
-                            AuthStatus.NOT_LOGGED_IN -> "未登录 (点击登录)"
-                        },
-                        fontSize = 12.sp,
-                        color = Color(0xFF333333),
-                        modifier = Modifier.clickable {
-                            if (authStatus != AuthStatus.LOGGED_IN) showLoginDialog = true
-                        }
-                    )
-                }
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = { bridgeManager.startNewChat() }) {
-                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(modifier = Modifier.width(2.dp))
-                        Text("新一题", fontSize = 11.sp)
-                    }
-
-                    IconButton(
-                        onClick = { showLoginDialog = true },
-                        modifier = Modifier.size(28.dp)
-                    ) {
-                        Icon(Icons.Default.Settings, contentDescription = "网页管理", modifier = Modifier.size(16.dp))
-                    }
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        // 2. 题目输入与图片直传卡片
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
-            elevation = CardDefaults.cardElevation(2.dp)
-        ) {
-            Column(modifier = Modifier.padding(12.dp)) {
-                // 题目图片缩略图展示
-                AnimatedVisibility(visible = selectedImageUri != null) {
-                    val bitmap = rememberBitmapFromUri(context, selectedImageUri)
-                    Box(modifier = Modifier.fillMaxWidth().height(160.dp).padding(bottom = 8.dp)) {
-                        if (bitmap != null) {
-                            Image(
-                                bitmap = bitmap,
-                                contentDescription = "题目截图",
-                                modifier = Modifier.fillMaxSize().background(Color(0xFFEEEEEE), RoundedCornerShape(6.dp)),
-                                contentScale = ContentScale.Fit
-                            )
-                        } else {
-                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                CircularProgressIndicator(modifier = Modifier.size(24.dp))
-                            }
-                        }
-                        IconButton(
-                            onClick = {
-                                selectedImageUri = null
-                                selectedImageBase64 = null
-                            },
-                            modifier = Modifier.align(Alignment.TopEnd).size(28.dp)
-                        ) {
-                            Icon(Icons.Default.Close, contentDescription = "移除图片", tint = Color.Red)
-                        }
-                    }
-                }
-
-                // 题目文字补充框
-                OutlinedTextField(
-                    value = problemText,
-                    onValueChange = { problemText = it },
-                    placeholder = {
-                        Text(
-                            text = if (selectedImageUri != null)
-                                "图片已就绪！可直接点击下方【开始深度推导】，或补充解题要求..."
-                            else
-                                "点击右下角【传题目原图】直发几何图/坐标系；或直接粘贴题目文字与公式...",
-                            fontSize = 13.sp,
-                            lineHeight = 18.sp
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth().height(110.dp),
-                    textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
-                )
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // 控制按钮条：传图、R1 开关、求解
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                FilledTonalButton(
+                    onClick = { currentViewMode = 0 },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = Color(0xFF2C5E8A),
+                        contentColor = Color.White
+                    ),
+                    modifier = Modifier.height(34.dp)
                 ) {
-                    FilledTonalButton(
-                        onClick = { imgPicker.launch("image/*") },
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                        modifier = Modifier.height(36.dp)
-                    ) {
-                        Icon(Icons.Default.PhotoCamera, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(if (selectedImageUri == null) "拍题/传原图" else "重选原图", fontSize = 12.sp)
-                    }
+                    Icon(Icons.Default.ArrowBack, contentDescription = "返回原生", modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("返回原生精读", fontSize = 12.sp)
+                }
 
-                    // R1 深度思考开关
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("🧠 R1深度思考", fontSize = 11.sp, color = if (enableR1) Color(0xFF1B3B5A) else Color.Gray)
-                        Switch(
-                            checked = enableR1,
-                            onCheckedChange = { enableR1 = it },
-                            modifier = Modifier.scale(0.8f)
-                        )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { bridgeManager.checkLoginStatus(forceReload = true) }) {
+                        Icon(Icons.Default.Refresh, contentDescription = "刷新", tint = Color.White)
                     }
+                    IconButton(onClick = { bridgeManager.startNewChat() }) {
+                        Icon(Icons.Default.Add, contentDescription = "新一题", tint = Color.White)
+                    }
+                    IconButton(onClick = { bridgeManager.logoutAndClear() }) {
+                        Icon(Icons.Default.Delete, contentDescription = "清理登出", tint = Color.White)
+                    }
+                }
+            }
 
-                    Button(
-                        onClick = {
-                            if (authStatus != AuthStatus.LOGGED_IN) {
-                                showLoginDialog = true
-                                Toast.makeText(context, "请先登录官方账号", Toast.LENGTH_SHORT).show()
-                                return@Button
-                            }
-                            if (problemText.isBlank() && selectedImageBase64 == null) {
-                                Toast.makeText(context, "请先上传题目原图或输入题目内容", Toast.LENGTH_SHORT).show()
-                                return@Button
-                            }
-                            bridgeManager.solveProblem(problemText, selectedImageBase64, enableR1)
-                        },
-                        enabled = solveStatus != SolveStatus.SOLVING,
-                        modifier = Modifier.height(36.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1B3B5A))
-                    ) {
-                        if (solveStatus == SolveStatus.SOLVING) {
-                            CircularProgressIndicator(modifier = Modifier.size(14.dp), color = Color.White, strokeWidth = 2.dp)
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("推导中...", fontSize = 12.sp)
-                        } else {
-                            Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(14.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("开始推导", fontSize = 12.sp)
+            // 官方网页渲染容器
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = {
+                        bridgeManager.webView.apply {
+                            (parent as? ViewGroup)?.removeView(this)
+                            layoutParams = FrameLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT
+                            )
                         }
                     }
-                }
+                )
             }
         }
-
-        Spacer(modifier = Modifier.height(14.dp))
-
-        // 3. 多轮问答历史
-        qaHistory.forEachIndexed { index, item ->
-            Card(
-                modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFFEFF3F8))
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text("🙋 第 ${index + 1} 问：${item.question}", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color(0xFF1B3B5A))
-                    Divider(modifier = Modifier.padding(vertical = 6.dp))
-                    Text(item.answer, fontSize = 13.sp, lineHeight = 20.sp, color = Color(0xFF222222))
-                }
-            }
-        }
-
-        // 4. 当前正在推导中的结果展示
-        if (solveStatus == SolveStatus.SOLVING || answerText.isNotBlank()) {
+    } else {
+        // ================= 视图 1：📱 原生精读视图 =================
+        Column(
+            modifier = modifier
+                .fillMaxSize()
+                .background(Color(0xFFF6F8FA))
+                .padding(14.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
+            // 1. 顶部模式切换与状态栏
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = Color.White),
-                elevation = CardDefaults.cardElevation(2.dp)
+                elevation = CardDefaults.cardElevation(1.dp)
             ) {
-                Column(modifier = Modifier.padding(14.dp)) {
-                    // 可折叠思考过程 (Thinking Process)
-                    if (thinkingText.isNotBlank()) {
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFFF1F3F5)),
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { isThinkingExpanded = !isThinkingExpanded }
-                        ) {
-                            Column(modifier = Modifier.padding(10.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text("🧠 深度推导逻辑链 (思维过程)", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF4A6572))
-                                        if (solveStatus == SolveStatus.SOLVING && answerText.isBlank()) {
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            CircularProgressIndicator(modifier = Modifier.size(10.dp), strokeWidth = 1.5.dp)
-                                        }
-                                    }
-                                    Icon(
-                                        if (isThinkingExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                }
-
-                                if (isThinkingExpanded) {
-                                    Spacer(modifier = Modifier.height(6.dp))
-                                    Text(
-                                        text = thinkingText,
-                                        fontSize = 11.sp,
-                                        lineHeight = 16.sp,
-                                        color = Color(0xFF555555)
-                                    )
-                                }
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(10.dp))
-                    }
-
-                    // 正式解答卡片标题与朗读按钮
+                Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("📝 规范解题步骤与答案", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1B3B5A))
-                        if (answerText.isNotBlank()) {
-                            IconButton(onClick = { voiceManager.speak(answerText) }) {
-                                Icon(Icons.Default.VolumeUp, contentDescription = "朗读答案", modifier = Modifier.size(18.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            val dotColor = when (authStatus) {
+                                AuthStatus.LOGGED_IN -> Color(0xFF4CAF50)
+                                AuthStatus.CHECKING -> Color(0xFFFFA000)
+                                AuthStatus.NOT_LOGGED_IN -> Color(0xFFE53935)
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .background(dotColor, RoundedCornerShape(5.dp))
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = when (authStatus) {
+                                    AuthStatus.LOGGED_IN -> "DeepSeek 官方已就绪"
+                                    AuthStatus.CHECKING -> "正在校验登录状态..."
+                                    AuthStatus.NOT_LOGGED_IN -> "未登录 (点击登录)"
+                                },
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = Color(0xFF333333),
+                                modifier = Modifier.clickable {
+                                    if (authStatus != AuthStatus.LOGGED_IN) currentViewMode = 1
+                                }
+                            )
+                        }
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            // 一键切换至官方网页
+                            OutlinedButton(
+                                onClick = { currentViewMode = 1 },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                modifier = Modifier.height(30.dp)
+                            ) {
+                                Text("🌐 官方网页", fontSize = 11.sp, color = Color(0xFF1B3B5A))
+                            }
+
+                            Spacer(modifier = Modifier.width(4.dp))
+
+                            IconButton(
+                                onClick = { bridgeManager.startNewChat() },
+                                modifier = Modifier.size(30.dp)
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = "新一题", modifier = Modifier.size(16.dp))
                             }
                         }
                     }
 
-                    Divider(modifier = Modifier.padding(vertical = 8.dp))
+                    // 诊断探针状态提示条 (实时反映题目是否发出、是否在思考)
+                    if (solveStatus == SolveStatus.SOLVING || stepDiagnosis.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFFF1F5F9), RoundedCornerShape(4.dp))
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                if (solveStatus == SolveStatus.SOLVING) {
+                                    CircularProgressIndicator(modifier = Modifier.size(10.dp), strokeWidth = 1.5.dp)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                }
+                                Text(
+                                    text = stepDiagnosis,
+                                    fontSize = 11.sp,
+                                    color = if (solveStatus == SolveStatus.ERROR) Color.Red else Color(0xFF475569)
+                                )
+                            }
 
-                    if (answerText.isBlank() && solveStatus == SolveStatus.SOLVING) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("正在进行全推导演算，请稍候...", fontSize = 13.sp, color = Color.Gray)
+                            if (solveStatus == SolveStatus.SOLVING) {
+                                Text(
+                                    text = "直看网页 👉",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF1B3B5A),
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.clickable { currentViewMode = 1 }
+                                )
+                            }
                         }
-                    } else {
-                        Text(
-                            text = answerText,
-                            fontSize = 14.sp,
-                            lineHeight = 22.sp,
-                            color = Color(0xFF222222)
-                        )
                     }
                 }
             }
-        }
 
-        Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
-        // 5. 底部多轮连续追问框
-        if (answerText.isNotBlank() || qaHistory.isNotEmpty()) {
+            // 2. 题目输入与图片直传卡片
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFFF3EFE6)),
-                elevation = CardDefaults.cardElevation(1.dp)
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                elevation = CardDefaults.cardElevation(2.dp)
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    // 题目图片缩略图展示
+                    AnimatedVisibility(visible = selectedImageUri != null) {
+                        val bitmap = rememberBitmapFromUri(context, selectedImageUri)
+                        Box(modifier = Modifier.fillMaxWidth().height(160.dp).padding(bottom = 8.dp)) {
+                            if (bitmap != null) {
+                                Image(
+                                    bitmap = bitmap,
+                                    contentDescription = "题目截图",
+                                    modifier = Modifier.fillMaxSize().background(Color(0xFFEEEEEE), RoundedCornerShape(6.dp)),
+                                    contentScale = ContentScale.Fit
+                                )
+                            } else {
+                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                                }
+                            }
+                            IconButton(
+                                onClick = {
+                                    selectedImageUri = null
+                                    selectedImageBase64 = null
+                                },
+                                modifier = Modifier.align(Alignment.TopEnd).size(28.dp)
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = "移除图片", tint = Color.Red)
+                            }
+                        }
+                    }
+
+                    // 题目文字补充框
                     OutlinedTextField(
-                        value = followUpQuestion,
-                        onValueChange = { followUpQuestion = it },
-                        placeholder = { Text("追问：如‘第(2)小问为什么两边平方？’...", fontSize = 13.sp) },
-                        modifier = Modifier.weight(1f).height(50.dp),
-                        singleLine = true
+                        value = problemText,
+                        onValueChange = { problemText = it },
+                        placeholder = {
+                            Text(
+                                text = if (selectedImageUri != null)
+                                    "图片已就绪！可直接点击下方【开始深度推导】，或补充具体问法..."
+                                else
+                                    "点击左下方【拍题/传原图】直发几何图/坐标系；或直接输入题目文字与公式...",
+                                fontSize = 13.sp,
+                                lineHeight = 18.sp
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth().height(110.dp),
+                        textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
                     )
 
-                    Button(
-                        onClick = {
-                            if (followUpQuestion.isNotBlank()) {
-                                bridgeManager.sendFollowUp(followUpQuestion)
-                                followUpQuestion = ""
-                            }
-                        },
-                        enabled = solveStatus != SolveStatus.SOLVING,
-                        modifier = Modifier.height(50.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1B3B5A))
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // 控制按钮条：传图、R1 开关、开始推导/停止推导
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("追问", fontSize = 13.sp)
+                        FilledTonalButton(
+                            onClick = { imgPicker.launch("image/*") },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            modifier = Modifier.height(36.dp)
+                        ) {
+                            Icon(Icons.Default.PhotoCamera, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(if (selectedImageUri == null) "传题目原图" else "重选原图", fontSize = 12.sp)
+                        }
+
+                        // R1 深度思考开关
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("🧠 R1深度思考", fontSize = 11.sp, color = if (enableR1) Color(0xFF1B3B5A) else Color.Gray)
+                            Switch(
+                                checked = enableR1,
+                                onCheckedChange = { enableR1 = it },
+                                modifier = Modifier.scale(0.8f)
+                            )
+                        }
+
+                        // 核心推导控制按钮 (推导中支持一键【⏹️ 停止】)
+                        if (solveStatus == SolveStatus.SOLVING) {
+                            Button(
+                                onClick = { bridgeManager.stopSolving() },
+                                modifier = Modifier.height(36.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F))
+                            ) {
+                                Icon(Icons.Default.Stop, null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("停止推导", fontSize = 12.sp)
+                            }
+                        } else {
+                            Button(
+                                onClick = {
+                                    if (authStatus != AuthStatus.LOGGED_IN) {
+                                        currentViewMode = 1
+                                        Toast.makeText(context, "请先在网页端登录 DeepSeek", Toast.LENGTH_SHORT).show()
+                                        return@Button
+                                    }
+                                    if (problemText.isBlank() && selectedImageBase64 == null) {
+                                        Toast.makeText(context, "请先上传题目原图或输入题目内容", Toast.LENGTH_SHORT).show()
+                                        return@Button
+                                    }
+                                    bridgeManager.solveProblem(problemText, selectedImageBase64, enableR1)
+                                },
+                                modifier = Modifier.height(36.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1B3B5A))
+                            ) {
+                                Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("开始推导", fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // 3. 多轮问答历史
+            qaHistory.forEachIndexed { index, item ->
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFEFF3F8))
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text("🙋 第 ${index + 1} 问：${item.question}", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color(0xFF1B3B5A))
+                        Divider(modifier = Modifier.padding(vertical = 6.dp))
+                        Text(item.answer, fontSize = 13.sp, lineHeight = 20.sp, color = Color(0xFF222222))
+                    }
+                }
+            }
+
+            // 4. 当前正在推导中的结果展示
+            if (solveStatus == SolveStatus.SOLVING || answerText.isNotBlank()) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    elevation = CardDefaults.cardElevation(2.dp)
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        // 可折叠思考过程 (Thinking Process)
+                        if (thinkingText.isNotBlank()) {
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFFF1F3F5)),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { isThinkingExpanded = !isThinkingExpanded }
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text("🧠 深度推导逻辑链 (思维过程)", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF4A6572))
+                                            if (solveStatus == SolveStatus.SOLVING && answerText.isBlank()) {
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                CircularProgressIndicator(modifier = Modifier.size(10.dp), strokeWidth = 1.5.dp)
+                                            }
+                                        }
+                                        Icon(
+                                            if (isThinkingExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+
+                                    if (isThinkingExpanded) {
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Text(
+                                            text = thinkingText,
+                                            fontSize = 11.sp,
+                                            lineHeight = 16.sp,
+                                            color = Color(0xFF555555)
+                                        )
+                                    }
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(10.dp))
+                        }
+
+                        // 正式解答卡片标题与朗读按钮
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("📝 规范解题步骤与答案", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1B3B5A))
+                            if (answerText.isNotBlank()) {
+                                IconButton(onClick = { voiceManager.speak(answerText) }) {
+                                    Icon(Icons.Default.VolumeUp, contentDescription = "朗读答案", modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        }
+
+                        Divider(modifier = Modifier.padding(vertical = 8.dp))
+
+                        if (answerText.isBlank() && solveStatus == SolveStatus.SOLVING) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("正在进行全推导演算，请稍候...", fontSize = 13.sp, color = Color.Gray)
+                            }
+                        } else {
+                            Text(
+                                text = answerText,
+                                fontSize = 14.sp,
+                                lineHeight = 22.sp,
+                                color = Color(0xFF222222)
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // 5. 底部多轮连续追问框
+            if (answerText.isNotBlank() || qaHistory.isNotEmpty()) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF3EFE6)),
+                    elevation = CardDefaults.cardElevation(1.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = followUpQuestion,
+                            onValueChange = { followUpQuestion = it },
+                            placeholder = { Text("追问：如‘第(2)小问为什么两边平方？’...", fontSize = 13.sp) },
+                            modifier = Modifier.weight(1f).height(50.dp),
+                            singleLine = true
+                        )
+
+                        Button(
+                            onClick = {
+                                if (followUpQuestion.isNotBlank()) {
+                                    bridgeManager.sendFollowUp(followUpQuestion)
+                                    followUpQuestion = ""
+                                }
+                            },
+                            enabled = solveStatus != SolveStatus.SOLVING,
+                            modifier = Modifier.height(50.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1B3B5A))
+                        ) {
+                            Text("追问", fontSize = 13.sp)
+                        }
                     }
                 }
             }
@@ -432,7 +544,6 @@ fun MathSolverScreen(
 }
 
 // 辅助：从本地 Uri 加载 ImageBitmap
-
 @Composable
 fun rememberBitmapFromUri(context: Context, uri: Uri?): ImageBitmap? {
     if (uri == null) return null

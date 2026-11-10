@@ -64,7 +64,11 @@ class DeepSeekBridgeManager(private val context: Context) {
     private val _qaHistory = MutableStateFlow<List<QaHistoryItem>>(emptyList())
     val qaHistory = _qaHistory.asStateFlow()
 
+    private val _stepDiagnosis = MutableStateFlow("空闲待命")
+    val stepDiagnosis = _stepDiagnosis.asStateFlow()
+
     private var lastSentQuestion: String = ""
+    private var solveTimeoutRunnable: Runnable? = null
 
     val webView: WebView by lazy {
         WebView(context).apply {
@@ -220,7 +224,7 @@ class DeepSeekBridgeManager(private val context: Context) {
     }
 
     /**
-     * 发送题目求解 (支持图片直发 + 定制 Prompt + R1 深度思考联动)
+     * 发送题目求解 (支持图片直发 + 定制 Prompt + R1 深度思考联动 + 状态打点)
      */
     fun solveProblem(
         rawProblemText: String,
@@ -237,12 +241,25 @@ class DeepSeekBridgeManager(private val context: Context) {
         _currentThinking.value = ""
         _currentAnswer.value = ""
         _errorMessage.value = null
+        _stepDiagnosis.value = "正在初始化题目并连接网页输入框..."
+
+        // 取消上一轮可能的超时任务并启动新一轮诊断监控
+        solveTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        solveTimeoutRunnable = Runnable {
+            if (_solveStatus.value == SolveStatus.SOLVING && _currentAnswer.value.isBlank()) {
+                _stepDiagnosis.value = "网页端响应较慢，可能触发人机验证，请点击【🌐 官方网页】查看"
+            }
+        }.also { mainHandler.postDelayed(it, 16000) }
 
         val promptText = buildProblemPrompt(rawProblemText)
 
         val js = """
-            (function() {
+            (async function() {
                 try {
+                    function logStep(msg) {
+                        try { window.AndroidBridge.onStep(msg); } catch(e) {}
+                    }
+
                     function findBtnByText(selector, text) {
                         const elements = document.querySelectorAll(selector);
                         for (let i = 0; i < elements.length; i++) {
@@ -251,7 +268,8 @@ class DeepSeekBridgeManager(private val context: Context) {
                         return null;
                     }
 
-                    // 1. 确保 R1 深度思考按钮状态对齐 (使用 W3C 标准遍历查找)
+                    logStep("正在对齐 R1 深度思考模式...");
+                    // 1. 确保 R1 深度思考按钮状态对齐
                     const r1Btn = document.querySelector('button[aria-label*="深度思考"]') 
                                || findBtnByText('button', '深度思考') 
                                || findBtnByText('div[role="button"]', '深度思考');
@@ -265,28 +283,75 @@ class DeepSeekBridgeManager(private val context: Context) {
                     }
 
                     // 2. 如果存在图片，模拟注入上传
-                    ${if (!imageBase64.isNullOrBlank()) buildImageInjectScript(imageBase64) else ""}
+                    ${if (!imageBase64.isNullOrBlank()) """
+                    logStep("正在注入题目原图...");
+                    try {
+                        const res = await fetch("${imageBase64}");
+                        const blob = await res.blob();
+                        const file = new File([blob], "problem_image.jpg", { type: "image/jpeg" });
+                        const fileInput = document.querySelector('input[type="file"][accept*="image"]') 
+                                       || document.querySelector('input[type="file"]');
+                        if (fileInput) {
+                            const dataTransfer = new DataTransfer();
+                            dataTransfer.items.add(file);
+                            fileInput.files = dataTransfer.files;
+                            fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+                            await new Promise(r => setTimeout(r, 600));
+                        }
+                    } catch(err) {
+                        logStep("图片注入跳过: " + err.message);
+                    }
+                    """ else ""}
 
                     // 3. 填入定制 Prompt
-                    const textarea = document.querySelector('textarea');
+                    logStep("正在填入解题提示词...");
+                    let textarea = document.querySelector('textarea') 
+                                || document.querySelector('div[contenteditable="true"]');
                     if (!textarea) {
-                        window.AndroidBridge.onError("正在连接官方页面，请稍等后重试");
+                        window.AndroidBridge.onError("未能定位输入框，请点击上方【🌐 官方网页】直接输入");
                         return;
                     }
 
-                    const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
-                    nativeSetter.call(textarea, ${JSONObject.quote(promptText)});
-                    textarea.dispatchEvent(new Event('input', { bubbles: true }));
-
-                    // 4. 等待就绪后点击发送
-                    setTimeout(() => {
-                        const sendBtn = document.querySelector('button[type="submit"], div[role="button"][aria-label*="发送"], [class*="send-btn"]');
-                        if (sendBtn && !sendBtn.disabled) {
-                            sendBtn.click();
+                    if (textarea.tagName === 'TEXTAREA') {
+                        const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
+                        if (nativeSetter) {
+                            nativeSetter.call(textarea, ${JSONObject.quote(promptText)});
                         } else {
-                            textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+                            textarea.value = ${JSONObject.quote(promptText)};
                         }
-                    }, 600);
+                    } else {
+                        textarea.innerText = ${JSONObject.quote(promptText)};
+                    }
+                    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                    textarea.dispatchEvent(new Event('change', { bubbles: true }));
+
+                    await new Promise(r => setTimeout(r, 400));
+
+                    // 4. 定位发送按钮并触发
+                    logStep("正在检索并点击发送按钮...");
+                    function getSendButton() {
+                        const direct = document.querySelector('button[type="submit"], div[role="button"][aria-label*="发送"], button[aria-label*="发送"], [class*="send-btn"]');
+                        if (direct) return direct;
+                        
+                        // 寻找包含 SVG 箭头的按钮
+                        const allButtons = Array.from(document.querySelectorAll('button, div[role="button"]'));
+                        for (let b of allButtons) {
+                            if (b.querySelector('svg')) return b;
+                        }
+                        return null;
+                    }
+
+                    const sendBtn = getSendButton();
+                    if (sendBtn) {
+                        if (sendBtn.disabled) {
+                            await new Promise(r => setTimeout(r, 600));
+                        }
+                        sendBtn.click();
+                        logStep("已成功触发发送，等待官方大模型响应...");
+                    } else {
+                        textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+                        logStep("已发送键盘回车指令，若无响应请切换至网页端确认");
+                    }
 
                 } catch (e) {
                     window.AndroidBridge.onError("发送题目发生异常: " + e.message);
@@ -296,6 +361,24 @@ class DeepSeekBridgeManager(private val context: Context) {
 
         mainHandler.post {
             webView.evaluateJavascript(js, null)
+        }
+    }
+
+    /**
+     * 手动停止推导
+     */
+    fun stopSolving() {
+        solveTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        mainHandler.post {
+            val js = """
+                (function() {
+                    const stopBtn = document.querySelector('button[aria-label*="停止"], [class*="stop-btn"], div[role="button"][aria-label*="停止"]');
+                    if (stopBtn) stopBtn.click();
+                })();
+            """.trimIndent()
+            webView.evaluateJavascript(js, null)
+            _solveStatus.value = if (_currentAnswer.value.isNotBlank()) SolveStatus.SUCCESS else SolveStatus.IDLE
+            _stepDiagnosis.value = "推导已手动停止"
         }
     }
 
@@ -448,16 +531,25 @@ class DeepSeekBridgeManager(private val context: Context) {
 
         @JavascriptInterface
         fun onError(msg: String) {
+            solveTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
             _errorMessage.value = msg
             _solveStatus.value = SolveStatus.ERROR
+            _stepDiagnosis.value = "推导异常: $msg"
+        }
+
+        @JavascriptInterface
+        fun onStep(msg: String) {
+            _stepDiagnosis.value = msg
         }
 
         @JavascriptInterface
         fun onContentUpdate(thinking: String, answer: String, isFinished: Boolean) {
+            solveTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
             _currentThinking.value = thinking
             _currentAnswer.value = answer
             if (isFinished && answer.isNotBlank()) {
                 _solveStatus.value = SolveStatus.SUCCESS
+                _stepDiagnosis.value = "推导完成"
                 val existing = _qaHistory.value.toMutableList()
                 if (existing.none { it.question == lastSentQuestion && it.answer == answer }) {
                     existing.add(QaHistoryItem(lastSentQuestion, thinking, answer))
@@ -465,6 +557,7 @@ class DeepSeekBridgeManager(private val context: Context) {
                 }
             } else {
                 _solveStatus.value = SolveStatus.SOLVING
+                _stepDiagnosis.value = if (thinking.isNotBlank() && answer.isBlank()) "🧠 官方 R1 正在深度思考中..." else "📝 正在输出解答..."
             }
         }
     }
