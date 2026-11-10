@@ -305,14 +305,27 @@ class DeepSeekBridgeManager(private val context: Context) {
                     };
                 }
 
-                // 基于“停止状态与内容长度持续对比”的第一性原理精准判定大模型生成状态
+                // 多维组合判定状态机：前置推导阶段门禁 + 停止/发送状态 + 尾部工具栏 + 多轮对比最后收尾
                 let lastObservedLength = 0;
                 let lengthUnchangedRounds = 0;
+                let hasEverStarted = false; // 是否已检测到本次题目开始响应
 
-                function detectGenerationStatus(currentLength) {
-                    // 1. 检查输入区域是否存在停止按钮
+                function evaluateGenerationCombination(currentLength) {
+                    // 0. 核心保障：自动将页面与滚动容器滑到底部，确保最新内容与末尾工具栏 100% 触发渲染！
+                    try {
+                        window.scrollTo(0, document.body.scrollHeight);
+                        const scrollContainers = Array.from(document.querySelectorAll('[class*="scroll"], main, [role="main"]'));
+                        scrollContainers.forEach(sc => {
+                            if (sc.scrollHeight > sc.clientHeight) {
+                                sc.scrollTop = sc.scrollHeight;
+                            }
+                        });
+                    } catch(e) {}
+
+                    // 1. 检查输入区域是否存在停止按钮与发送按钮
                     const allButtons = Array.from(document.querySelectorAll('button, div[role="button"], a[role="button"]'));
                     let hasStopButton = false;
+                    let hasSendButton = false;
 
                     for (const btn of allButtons) {
                         const label = (btn.getAttribute('aria-label') || btn.innerText || btn.title || '').trim().toLowerCase();
@@ -329,7 +342,20 @@ class DeepSeekBridgeManager(private val context: Context) {
                         }
                     }
 
-                    // 2. 检查打字机光标与思考跳动
+                    // 检查发送按钮恢复状态 (输入区域带向上箭头或发送文本)
+                    for (const btn of allButtons) {
+                        const label = (btn.getAttribute('aria-label') || btn.innerText || btn.title || '').trim().toLowerCase();
+                        const isSendWord = label.includes('发送') || label.includes('send');
+                        const hasArrowSvg = !!btn.querySelector('path, polygon, polyline');
+                        const rect = btn.getBoundingClientRect();
+
+                        if (rect.top > window.innerHeight * 0.3 && (isSendWord || (hasArrowSvg && !label.includes('思考') && !label.includes('上传')))) {
+                            hasSendButton = true;
+                            break;
+                        }
+                    }
+
+                    // 2. 检查打字机光标与思考活跃度
                     const hasTypingCursor = !!document.querySelector('.ds-typing, .typing, [class*="cursor"], [class*="blinking"]');
                     let isThinkingActive = false;
                     const thinkElems = Array.from(document.querySelectorAll('[class*="thinking"], [class*="thought"]'));
@@ -341,34 +367,67 @@ class DeepSeekBridgeManager(private val context: Context) {
                         }
                     }
 
-                    // 3. 遵照用户核心指示：通过多次返回对比内容变化！
-                    // 只要字数还在增长，100% 确定大模型仍在源源不断输出，绝对在生成中！
-                    if (currentLength > lastObservedLength) {
-                        lastObservedLength = currentLength;
-                        lengthUnchangedRounds = 0;
-                        return true;
-                    }
-
-                    // 4. 若出现停止按钮、打字光标或思考中 -> 必在生成中！
-                    if (hasStopButton || hasTypingCursor || isThinkingActive) {
-                        lengthUnchangedRounds = 0;
-                        return true;
-                    }
-
-                    // 5. 若字数未变，累计稳定轮次 (必须连续 5 轮以上未发生任何字符变化，且无停止按钮，才算完成)
-                    if (currentLength > 0 && currentLength === lastObservedLength) {
-                        lengthUnchangedRounds++;
-                        if (lengthUnchangedRounds < 5) {
-                            return true; // 仍在防抖观察期，保守视为生成中
+                    // 3. 检查最新消息卡片末尾是否已挂载【复制】或【重新生成】按钮 (仅检测最后一个消息卡片内部)
+                    let hasTailActionButtons = false;
+                    const allMds = Array.from(document.querySelectorAll('.ds-markdown'));
+                    if (allMds.length > 0) {
+                        const lastMd = allMds[allMds.length - 1];
+                        const parentCard = lastMd.closest('[class*="message"], [class*="chat-item"]') || lastMd.parentElement;
+                        if (parentCard) {
+                            const cardBtns = Array.from(parentCard.querySelectorAll('button, div[role="button"]'));
+                            for (const b of cardBtns) {
+                                const txt = (b.getAttribute('aria-label') || b.innerText || b.title || '').trim().toLowerCase();
+                                if (txt.includes('复制') || txt.includes('copy') || txt.includes('重新生成') || txt.includes('regenerate')) {
+                                    hasTailActionButtons = true;
+                                    break;
+                                }
+                            }
                         }
                     }
 
-                    return false;
+                    // 确认大模型开始响应并产生推导动作
+                    if (hasStopButton || hasTypingCursor || isThinkingActive || currentLength > 0) {
+                        hasEverStarted = true;
+                    }
+
+                    // 【第一重门禁】：在推导尚未真正开始前，多轮对比绝对禁用，绝不允许判定完成！
+                    if (!hasEverStarted) {
+                        return { isGenerating: true, hasSendButton: false, hasTailActionButtons: false, isReadyToFinalize: false };
+                    }
+
+                    // 【第二重门禁】：字数在增长、或有停止按钮、光标或思考中 -> 绝对在生成中！
+                    if (currentLength > lastObservedLength) {
+                        lastObservedLength = currentLength;
+                        lengthUnchangedRounds = 0;
+                        return { isGenerating: true, hasSendButton, hasTailActionButtons, isReadyToFinalize: false };
+                    }
+
+                    if (hasStopButton || hasTypingCursor || isThinkingActive) {
+                        lengthUnchangedRounds = 0;
+                        return { isGenerating: true, hasSendButton, hasTailActionButtons, isReadyToFinalize: false };
+                    }
+
+                    // 【第三重门禁：多轮对比最后使用！】
+                    // 只有当大模型停下、停止按钮彻底消失，且满足【发送按钮恢复】或者【末尾出现复制按钮】时，
+                    // 才标记进入收尾阶段，启动多轮对比进行最终确认！
+                    const hasExitSignal = hasSendButton || hasTailActionButtons;
+                    if (hasExitSignal && currentLength > 0) {
+                        lengthUnchangedRounds++;
+                        if (lengthUnchangedRounds >= 3) {
+                            return { isGenerating: false, hasSendButton, hasTailActionButtons, isReadyToFinalize: true };
+                        }
+                    } else if (currentLength > 0) {
+                        lengthUnchangedRounds++;
+                        if (lengthUnchangedRounds >= 5) { // 兜底安全保障
+                            return { isGenerating: false, hasSendButton, hasTailActionButtons, isReadyToFinalize: true };
+                        }
+                    }
+
+                    return { isGenerating: true, hasSendButton, hasTailActionButtons, isReadyToFinalize: false };
                 }
 
                 // 双轨保障状态机：绝不死锁，只要网页端出了结果立即捕获！
                 let lastStableLength = 0;
-                let stableCount = 0;
                 let finishReported = false;
 
                 function checkStatus() {
@@ -386,24 +445,21 @@ class DeepSeekBridgeManager(private val context: Context) {
                     // 2. 状态判定与内容提取
                     const data = extractLatestTurnData();
                     const currentLen = data ? ((data.markdown || "").length + (data.html || "").length) : 0;
-                    const isGenerating = detectGenerationStatus(currentLen);
+                    const status = evaluateGenerationCombination(currentLen);
                     const hasContent = !!(data && (data.markdown || data.html));
 
-                    if (isGenerating) {
+                    if (status.isGenerating) {
                         finishReported = false;
-                        stableCount = 0;
                         const len = data ? (data.markdown || "").length : 0;
                         const msg = len > 0 ? ("📝 正在输出公式与分步解答 (已生成 " + len + " 字)...") : "🧠 官方 R1 正在深度思考中...";
                         window.AndroidBridge.onGeneratingProgress(msg);
                         return;
                     }
 
-                    // 3. 真正完成判定：非生成态 + 内容非空 + 连续多次检测绝对稳定
-                    if (hasContent && lengthUnchangedRounds >= 5) {
-                        if (!finishReported) {
-                            finishReported = true;
-                            window.AndroidBridge.onSolveFinished(data.thinking, data.markdown, data.html, data.plainText);
-                        }
+                    // 3. 真正完成判定：组合条件全满 + 内容非空
+                    if (hasContent && !finishReported) {
+                        finishReported = true;
+                        window.AndroidBridge.onSolveFinished(data.thinking, data.markdown, data.html, data.plainText);
                     }
                 }
 
@@ -411,18 +467,22 @@ class DeepSeekBridgeManager(private val context: Context) {
                 window.__ds_force_extract = function() {
                     const data = extractLatestTurnData();
                     const currentLen = data ? ((data.markdown || "").length + (data.html || "").length) : 0;
-                    const isGenerating = detectGenerationStatus(currentLen);
+                    const status = evaluateGenerationCombination(currentLen);
                     const hasContent = !!(data && (data.markdown || data.html));
 
                     const result = {
-                        isGenerating: isGenerating,
+                        isGenerating: status.isGenerating,
+                        hasSendButton: status.hasSendButton,
+                        hasTailActionButtons: status.hasTailActionButtons,
+                        isReadyToFinalize: status.isReadyToFinalize,
                         thinking: (data && data.thinking) || "",
                         markdown: (data && data.markdown) || "",
                         html: (data && data.html) || "",
                         plainText: (data && data.plainText) || ""
                     };
 
-                    if (!isGenerating && hasContent && lengthUnchangedRounds >= 5) {
+                    if (!status.isGenerating && hasContent && !finishReported) {
+                        finishReported = true;
                         try {
                             window.AndroidBridge.onSolveFinished(result.thinking, result.markdown, result.html, result.plainText);
                         } catch(e) {}
@@ -460,14 +520,14 @@ class DeepSeekBridgeManager(private val context: Context) {
     }
 
     /**
-     * 启动 Native 强劲主动轮询机制 (遵照多次对比内容变化逻辑，持续侦听全量输出)
+     * 启动 Native 强劲主动轮询机制 (遵照用户建议：每 1 秒对比字数变动，连续 3 轮无变化 3 秒即刻结案)
      */
     private fun startActivePolling() {
         solveTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
         var pollCount = 0
         var lastContentLen = 0
         var stableCount = 0
-        val maxPollCount = 150 // 最长 3 分钟持续护航
+        val maxPollCount = 180 // 3 分钟为大模型卡死时的绝对安全上限，正常打完 3 秒即刻结案
 
         val pollTask = object : Runnable {
             override fun run() {
@@ -495,6 +555,9 @@ class DeepSeekBridgeManager(private val context: Context) {
                             }
                             val obj = JSONObject(parsed)
                             val isGenerating = obj.optBoolean("isGenerating", false)
+                            val isReadyToFinalize = obj.optBoolean("isReadyToFinalize", false)
+                            val hasSendButton = obj.optBoolean("hasSendButton", false)
+                            val hasTailActionButtons = obj.optBoolean("hasTailActionButtons", false)
                             val thinking = obj.optString("thinking", "")
                             val markdown = obj.optString("markdown", "")
                             val html = obj.optString("html", "")
@@ -516,26 +579,33 @@ class DeepSeekBridgeManager(private val context: Context) {
                                     "📝 正在输出公式与解答（已输出 ${markdown.length} 字）..."
                                 }
                             } else if (currentLen > 0 && currentLen == lastContentLen) {
-                                stableCount++
-                                // 2. 稳定收尾阶段：大模型停止输出，且连续多次字数绝对未变
-                                if (stableCount >= 5 && !isGenerating) {
-                                    mainHandler.post {
-                                        handleSolveFinished(thinking, markdown, html, plainText)
+                                // 遵照用户核心准则：多轮对比最后使用！
+                                // 只有当前端确认大模型输出停笔、停止按钮已彻底消失，且进入收尾判定态 (isReadyToFinalize) 时，
+                                // 多轮对比才在最后启动确认，绝不在推导未开始或打字中误判结案！
+                                if (isReadyToFinalize || (!isGenerating && (hasSendButton || hasTailActionButtons))) {
+                                    stableCount++
+                                    if (stableCount >= 3) {
+                                        mainHandler.post {
+                                            handleSolveFinished(thinking, markdown, html, plainText)
+                                        }
+                                        return@evaluateJavascript
                                     }
+                                } else {
+                                    stableCount = 0
                                 }
                             }
                         } catch (e: Exception) {}
                     }
                 }
 
-                // 只要还没完全稳定，持续多次对比变动，绝不提前掐断
-                if (stableCount < 8 && pollCount < maxPollCount) {
-                    mainHandler.postDelayed(this, 1200)
+                // 只要未达 3 轮稳定且在保护时间内，每秒对比一次变化
+                if (stableCount < 3 && pollCount < maxPollCount) {
+                    mainHandler.postDelayed(this, 1000)
                 }
             }
         }
         solveTimeoutRunnable = pollTask
-        mainHandler.postDelayed(pollTask, 1200)
+        mainHandler.postDelayed(pollTask, 1000)
     }
 
     /**
