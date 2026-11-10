@@ -397,7 +397,7 @@ class DeepSeekBridgeManager(private val context: Context) {
                 removeAllViews()
                 destroy()
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {}
     }
 
     private fun buildProblemPrompt(problemText: String): String {

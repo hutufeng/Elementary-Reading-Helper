@@ -85,9 +85,9 @@ fun DeepSeekLoginDialog(
                 // 网页加载进度条
                 if (progress in 1..99) {
                     LinearProgressIndicator(
-                        progress = { progress / 100f },
+                        progress = progress / 100f,
                         modifier = Modifier.fillMaxWidth().height(3.dp),
-                        color = Color(0xFF4A90E2),
+                        color = Color(0xFF4A90E2)
                     )
                 }
 

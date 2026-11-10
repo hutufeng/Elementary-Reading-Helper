@@ -21,6 +21,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -430,10 +431,7 @@ fun MathSolverScreen(
     }
 }
 
-// 辅助扩展：Compose Modifier 缩放
-fun Modifier.scale(scale: Float): Modifier = this.then(
-    Modifier.padding(0.dp) // 保持紧凑
-)
+// 辅助：从本地 Uri 加载 ImageBitmap
 
 @Composable
 fun rememberBitmapFromUri(context: Context, uri: Uri?): ImageBitmap? {
