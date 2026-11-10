@@ -119,23 +119,17 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                         confirmButton = {
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                OutlinedButton(
-                                    onClick = {
-                                        UpdateManager.openDownloadUrl(context, updateInfo.officialDownloadUrl)
-                                        vm.dismissUpdateDialog()
-                                    }
-                                ) {
-                                    Text("官方源")
-                                }
-                                Button(
-                                    onClick = {
-                                        UpdateManager.openDownloadUrl(context, updateInfo.mirrorDownloadUrl)
-                                        vm.dismissUpdateDialog()
-                                    }
-                                ) {
-                                    Text("🚀 高速下载")
-                                }
+                            Button(
+                                onClick = {
+                                    val targetUrl = updateInfo.mirrorDownloadUrl.ifBlank { updateInfo.officialDownloadUrl }
+                                    UpdateManager.openDownloadUrl(context, targetUrl)
+                                    vm.dismissUpdateDialog()
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1B3B5A))
+                            ) {
+                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("立即升级最新版")
                             }
                         },
                         dismissButton = {

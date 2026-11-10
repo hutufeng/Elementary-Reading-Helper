@@ -334,10 +334,11 @@ class DeepSeekBridgeManager(private val context: Context) {
                         return;
                     }
 
-                    // 2. 检查是否有停止按钮或打字光标
-                    const stopBtn = document.querySelector('button[aria-label*="停止"], [class*="stop-btn"], div[role="button"][aria-label*="停止"], svg rect');
-                    const isTyping = !!document.querySelector('.ds-typing, [class*="typing"]');
-                    const isGenerating = !!(stopBtn || isTyping);
+                    // 2. 检查是否有停止按钮或打字光标 (严格判定可见性，绝不误判常规 SVG 图形)
+                    const stopBtn = document.querySelector('button[aria-label*="停止"], [class*="stop-btn"], div[role="button"][aria-label*="停止"]');
+                    const isStopVisible = !!(stopBtn && stopBtn.offsetParent !== null);
+                    const isTyping = !!document.querySelector('.ds-typing');
+                    const isGenerating = isStopVisible || isTyping;
 
                     // 3. 抓取回答内容
                     const data = extractLatestTurnData();
@@ -661,6 +662,10 @@ class DeepSeekBridgeManager(private val context: Context) {
                 (function() {
                     const stopBtn = document.querySelector('button[aria-label*="停止"], [class*="stop-btn"], div[role="button"][aria-label*="停止"]');
                     if (stopBtn) stopBtn.click();
+                    if (window.__ds_poll_timer) {
+                        clearInterval(window.__ds_poll_timer);
+                        window.__ds_poll_timer = null;
+                    }
                 })();
             """.trimIndent()
             webView.evaluateJavascript(js, null)
@@ -888,20 +893,24 @@ class DeepSeekBridgeManager(private val context: Context) {
 
         @JavascriptInterface
         fun onGeneratingProgress(msg: String) {
-            solveTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
-            _solveStatus.value = SolveStatus.SOLVING
-            _stepDiagnosis.value = msg
+            // 严禁 JS 擅自篡权：只有当 Native 主动发起了题目推导 (SOLVING) 时，才更新进度与状态
+            if (_solveStatus.value == SolveStatus.SOLVING) {
+                _stepDiagnosis.value = msg
+            }
         }
 
         @JavascriptInterface
         fun onSolveFinished(thinking: String, markdown: String, html: String, plainText: String) {
-            solveTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
-            _currentThinking.value = thinking
-            _currentAnswer.value = markdown
-            _currentAnswerHtml.value = html
-            _currentPlainText.value = plainText.ifBlank { markdown }
-            _solveStatus.value = SolveStatus.SUCCESS
-            _stepDiagnosis.value = "推导完成"
+            // 只有当 Native 处于求解状态，且获取到了有效内容时，才转为 SUCCESS
+            if (_solveStatus.value == SolveStatus.SOLVING && (markdown.isNotBlank() || html.isNotBlank())) {
+                solveTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+                _currentThinking.value = thinking
+                _currentAnswer.value = markdown
+                _currentAnswerHtml.value = html
+                _currentPlainText.value = plainText.ifBlank { markdown }
+                _solveStatus.value = SolveStatus.SUCCESS
+                _stepDiagnosis.value = "推导完成"
+            }
         }
 
         @JavascriptInterface
