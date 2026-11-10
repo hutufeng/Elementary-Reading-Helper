@@ -182,6 +182,7 @@ class DeepSeekBridgeManager(private val context: Context) {
      * 注入 DOM 监听与捕获脚本 (严格等待推导完成，杜绝半成品公式；精准提取最后一轮问答，杜绝追问重复)
      */
     private fun injectObserverScript() {
+        val d = '$'
         val js = """
             (function() {
                 if (window.__ds_observer_injected) return;
@@ -203,7 +204,7 @@ class DeepSeekBridgeManager(private val context: Context) {
                             tex = (k.textContent || "").replace(/\s+/g, ' ').trim();
                         }
                         const isDisplay = k.classList.contains('katex-display') || k.closest('.katex-display');
-                        const replacement = isDisplay ? ("\n\n$$ " + tex + " $$\n\n") : (" $" + tex + "$ ");
+                        const replacement = isDisplay ? ("\n\n$d$d " + tex + " $d$d\n\n") : (" $d" + tex + "$d ");
                         const textNode = document.createTextNode(replacement);
                         if (k.parentNode) {
                             k.parentNode.replaceChild(textNode, k);
@@ -235,10 +236,10 @@ class DeepSeekBridgeManager(private val context: Context) {
                         let tex = (ann && ann.textContent) ? ann.textContent.trim() : (k.textContent || "");
                         tex = tex.replace(/\\times/g, " 乘以 ")
                                  .replace(/\\div/g, " 除以 ")
-                                 .replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, " $2分之$1 ")
-                                 .replace(/\\sqrt\{([^{}]+)\}/g, " 根号$1 ")
+                                 .replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, " ${d}2分之${d}1 ")
+                                 .replace(/\\sqrt\{([^{}]+)\}/g, " 根号${d}1 ")
                                  .replace(/\\pm/g, " 加减 ")
-                                 .replace(/[\\${}]/g, " ");
+                                 .replace(/[\\${d}{}]/g, " ");
                         const textNode = document.createTextNode(" " + tex + " ");
                         if (k.parentNode) k.parentNode.replaceChild(textNode, k);
                     });
