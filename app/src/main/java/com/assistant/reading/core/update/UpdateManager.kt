@@ -141,25 +141,30 @@ object UpdateManager {
     }
 
     /**
-     * 使用 Android 系统 DownloadManager 单任务下载最新版 APK (杜绝打开网页导致全部下载)
+     * 使用 Android 系统 DownloadManager 单任务下载最新版 APK (支持选择 GitHub 官方源或高速镜像源)
      */
-    fun downloadLatestApk(context: Context, updateInfo: UpdateInfo) {
-        val downloadUrl = if (updateInfo.mirrorDownloadUrl.isNotBlank()) updateInfo.mirrorDownloadUrl else updateInfo.officialDownloadUrl
+    fun downloadLatestApk(context: Context, updateInfo: UpdateInfo, useMirror: Boolean = true) {
+        val downloadUrl = if (useMirror && updateInfo.mirrorDownloadUrl.isNotBlank()) {
+            updateInfo.mirrorDownloadUrl
+        } else {
+            updateInfo.officialDownloadUrl
+        }
         val fileName = "StudentReadingAssistant-${updateInfo.latestVersion}.apk"
+        val channelName = if (useMirror) "国内高速镜像" else "GitHub 官方源"
 
         try {
             val request = DownloadManager.Request(Uri.parse(downloadUrl)).apply {
                 setTitle("正在下载最新版 ($fileName)")
-                setDescription("智能伴读助手更新包")
+                setDescription("下载通道：$channelName")
                 setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                 setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
                 setMimeType("application/vnd.android.package-archive")
             }
             val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
             manager.enqueue(request)
-            Toast.makeText(context, "已启动最新版本下载 ($fileName)，请在通知栏查看进度", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, "[$channelName] 已启动最新版下载 ($fileName)，请在通知栏查看进度", Toast.LENGTH_LONG).show()
         } catch (e: Exception) {
-            // 降级兜底：调用浏览器单次打开直链
+            // 降级兜底：调用浏览器单次打开单包直链
             openDownloadUrl(context, downloadUrl)
         }
     }

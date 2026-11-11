@@ -118,7 +118,8 @@ class MainActivity : ComponentActivity() {
                                 )
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Spacer(modifier = Modifier.height(6.dp))
-                                Text("💡 目标文件：StudentReadingAssistant-${updateInfo.latestVersion}.apk", fontSize = 11.sp, color = Color(0xFF1B3B5A), fontWeight = androidx.compose.ui.text.font.FontWeight.Medium)
+                                Text("💡 目标单包：StudentReadingAssistant-${updateInfo.latestVersion}.apk", fontSize = 11.sp, color = Color(0xFF1B3B5A), fontWeight = androidx.compose.ui.text.font.FontWeight.Medium)
+                                Text("💡 支持 GitHub 官方直连与国内高速镜像双通道，单包下载绝不重复。", fontSize = 10.sp, color = Color(0xFF2E7D32))
                             }
                         },
                         confirmButton = {
@@ -126,30 +127,40 @@ class MainActivity : ComponentActivity() {
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                TextButton(
+                                OutlinedButton(
                                     onClick = {
-                                        UpdateManager.openDownloadUrl(context, updateInfo.mirrorDownloadUrl.ifBlank { updateInfo.officialDownloadUrl })
+                                        UpdateManager.downloadLatestApk(context, updateInfo, useMirror = false)
                                         vm.dismissUpdateDialog()
                                     }
                                 ) {
-                                    Text("浏览器打开", fontSize = 12.sp)
+                                    Text("GitHub 官方源", fontSize = 12.sp)
                                 }
                                 Button(
                                     onClick = {
-                                        UpdateManager.downloadLatestApk(context, updateInfo)
+                                        UpdateManager.downloadLatestApk(context, updateInfo, useMirror = true)
                                         vm.dismissUpdateDialog()
                                     },
                                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1B3B5A))
                                 ) {
                                     Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
                                     Spacer(modifier = Modifier.width(4.dp))
-                                    Text("🚀 立即下载最新版")
+                                    Text("🚀 高速下载")
                                 }
                             }
                         },
                         dismissButton = {
-                            TextButton(onClick = { vm.dismissUpdateDialog() }) {
-                                Text("稍后再说")
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                TextButton(
+                                    onClick = {
+                                        UpdateManager.openDownloadUrl(context, updateInfo.officialDownloadUrl)
+                                        vm.dismissUpdateDialog()
+                                    }
+                                ) {
+                                    Text("浏览器打开", fontSize = 11.sp, color = Color.Gray)
+                                }
+                                TextButton(onClick = { vm.dismissUpdateDialog() }) {
+                                    Text("稍后再说")
+                                }
                             }
                         }
                     )
