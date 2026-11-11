@@ -59,6 +59,7 @@ class MainActivity : ComponentActivity() {
                 val context = LocalContext.current
                 val playbackState by voiceManager.playbackState.collectAsState()
                 var showSettingsDialog by remember { mutableStateOf(false) }
+                var expandedSectionIds by remember { mutableStateOf(setOf<Int>()) } // 5大导学关键点默认收拢 (空集合即全折叠)
 
                 // 同步当前语速到 VoiceManager
                 LaunchedEffect(uiState.speechRate) {
@@ -258,6 +259,7 @@ class MainActivity : ComponentActivity() {
                             }
 
                             FilledTonalButton(
+                                enabled = !uiState.isSessionLocked,
                                 onClick = {
                                     try {
                                         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -279,7 +281,10 @@ class MainActivity : ComponentActivity() {
                                 Text("按住说")
                             }
 
-                            FilledTonalButton(onClick = { imgPicker.launch("image/*") }) {
+                            FilledTonalButton(
+                                enabled = !uiState.isSessionLocked,
+                                onClick = { imgPicker.launch("image/*") }
+                            ) {
                                 Icon(Icons.Default.PhotoCamera, null, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(4.dp))
                                 Text("拍书籍")
@@ -360,21 +365,32 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(modifier = Modifier.height(8.dp))
 
-                        // 3. 课文/短文全能输入框 (支持一键清空)
+                        // 3. 课文/短文全能输入框 (支持一键清空与单次防呆锁定)
                         OutlinedTextField(
                             value = uiState.inputText,
                             onValueChange = { vm.updateInputText(it) },
+                            readOnly = uiState.isSessionLocked,
                             placeholder = { Text("输入篇名、课本年级课号（如：小学三年级上册第十课、小石潭记、背影）或直接粘贴长短文...") },
                             modifier = Modifier.fillMaxWidth().height(110.dp),
                             textStyle = LocalTextStyle.current.copy(fontSize = uiState.fontSizeSp.sp),
                             trailingIcon = {
-                                if (uiState.inputText.isNotEmpty()) {
+                                if (!uiState.isSessionLocked && uiState.inputText.isNotEmpty()) {
                                     IconButton(onClick = { vm.clearInputText() }) {
                                         Icon(Icons.Default.Clear, contentDescription = "清空输入框", tint = Color.Gray)
                                     }
                                 }
                             }
                         )
+
+                        if (uiState.isSessionLocked) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "🔒 当前篇目已锁定并生成导学。换篇请点击上方【➕ 新一课】；追问请在下方问答室。",
+                                fontSize = 11.sp,
+                                color = Color(0xFFD97706),
+                                fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
+                            )
+                        }
 
                         Spacer(modifier = Modifier.height(8.dp))
 
@@ -387,8 +403,9 @@ class MainActivity : ComponentActivity() {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Switch(
                                     checked = uiState.isDetailedMode,
+                                    enabled = !uiState.isSessionLocked,
                                     onCheckedChange = { vm.toggleDetailedMode(it) }
-                                    )
+                                )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Column {
                                     Text("📜 开启全文逐句精讲与文白对照 (默认关闭)", fontSize = 13.sp, color = Color(0xFF2C3E50))
@@ -399,7 +416,7 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(modifier = Modifier.height(8.dp))
 
-                        // 开始全景导读 / 停止生成 按钮 (防重入 + 支持停止未完成任务)
+                        // 开始全景导读 / 停止生成 按钮 (防重入 + 支持停止未完成任务 + 完成后引导新一课)
                         if (uiState.isLoading) {
                             Button(
                                 onClick = {
@@ -414,6 +431,22 @@ class MainActivity : ComponentActivity() {
                                 Spacer(Modifier.width(8.dp))
                                 Text("⏹️ 停止生成", fontSize = 16.sp)
                             }
+                        } else if (uiState.isSessionLocked) {
+                            // 已完成导读：防呆锁定，主按钮醒目引导点击【开启新一课】
+                            Button(
+                                onClick = {
+                                    voiceManager.stopSpeaking()
+                                    expandedSectionIds = emptySet()
+                                    vm.startNewLesson()
+                                    Toast.makeText(context, "已开启全新一课，输入框已解锁", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.fillMaxWidth().height(46.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2C6454))
+                            ) {
+                                Icon(Icons.Default.Add, null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("➕ 开启新一课 (当前已导学，点此新建)", fontSize = 15.sp)
+                            }
                         } else {
                             Button(
                                 onClick = {
@@ -421,6 +454,7 @@ class MainActivity : ComponentActivity() {
                                         showSettingsDialog = true
                                         Toast.makeText(context, "当前为 API 模式，请先配置 API Key；或切换为 DeepSeek 网页免 Key 模式！", Toast.LENGTH_LONG).show()
                                     } else {
+                                        expandedSectionIds = emptySet() // 默认折叠收拢
                                         vm.startReadingAssistant()
                                     }
                                 },
@@ -443,15 +477,46 @@ class MainActivity : ComponentActivity() {
                             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                         }
 
-                        // 3. 全景导读按段落/章节拆分卡片，每段附带独立朗读功能
+                        // 3. 全景导读按段落/章节拆分卡片，每段附带独立朗读与默认折叠收拢能力
                         if (uiState.sections.isNotEmpty()) {
                             Spacer(modifier = Modifier.height(14.dp))
-                            Text("🎯 全景深度导读与全套知识点清单：", style = MaterialTheme.typography.titleMedium, color = Color(0xFF1B3B5A))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("🎯 5大导学关键点 (默认已折叠)：", style = MaterialTheme.typography.titleMedium, color = Color(0xFF1B3B5A))
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    TextButton(
+                                        onClick = { expandedSectionIds = uiState.sections.map { it.id }.toSet() },
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                                        modifier = Modifier.height(26.dp)
+                                    ) {
+                                        Text("全部展开", fontSize = 11.sp, color = Color(0xFF1B3B5A))
+                                    }
+                                    TextButton(
+                                        onClick = { expandedSectionIds = emptySet() },
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                                        modifier = Modifier.height(26.dp)
+                                    ) {
+                                        Text("全部收拢", fontSize = 11.sp, color = Color(0xFF777777))
+                                    }
+                                }
+                            }
                             Spacer(modifier = Modifier.height(8.dp))
 
                             uiState.sections.forEach { section ->
+                                val isExpanded = expandedSectionIds.contains(section.id)
                                 SectionCardItem(
                                     section = section,
+                                    isExpanded = isExpanded,
+                                    onToggleExpand = {
+                                        expandedSectionIds = if (isExpanded) {
+                                            expandedSectionIds - section.id
+                                        } else {
+                                            expandedSectionIds + section.id
+                                        }
+                                    },
                                     fontSizeSp = uiState.fontSizeSp,
                                     onSpeakSection = {
                                         voiceManager.speak("${section.title}。\n${section.content}")
@@ -817,22 +882,27 @@ class MainActivity : ComponentActivity() {
 }
 
 /**
- * 分段/章节导读卡片 (带专属独立朗读按钮)
+ * 分段/章节导读卡片 (带专属独立朗读按钮与折叠收拢能力)
  */
 @Composable
 fun SectionCardItem(
     section: ReadingSection,
+    isExpanded: Boolean,
+    onToggleExpand: () -> Unit,
     fontSizeSp: Int,
     onSpeakSection: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        elevation = CardDefaults.cardElevation(2.dp)
+        colors = CardDefaults.cardColors(containerColor = if (isExpanded) Color.White else Color(0xFFF9FAFB)),
+        shape = RoundedCornerShape(10.dp),
+        elevation = CardDefaults.cardElevation(if (isExpanded) 2.dp else 0.5.dp)
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onToggleExpand() },
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -844,25 +914,38 @@ fun SectionCardItem(
                     modifier = Modifier.weight(1f)
                 )
 
-                FilledTonalButton(
-                    onClick = onSpeakSection,
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                    modifier = Modifier.height(34.dp)
-                ) {
-                    Icon(Icons.Default.VolumeUp, contentDescription = "朗读此段", modifier = Modifier.size(15.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("听此段", fontSize = 12.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    FilledTonalButton(
+                        onClick = onSpeakSection,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        modifier = Modifier.height(30.dp)
+                    ) {
+                        Icon(Icons.Default.VolumeUp, contentDescription = "朗读此段", modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(3.dp))
+                        Text("听此段", fontSize = 11.sp)
+                    }
+
+                    Spacer(modifier = Modifier.width(6.dp))
+
+                    Icon(
+                        if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = if (isExpanded) "收拢" else "展开",
+                        tint = Color(0xFF666666),
+                        modifier = Modifier.size(20.dp)
+                    )
                 }
             }
 
-            Divider(modifier = Modifier.padding(vertical = 8.dp))
+            if (isExpanded) {
+                Divider(modifier = Modifier.padding(vertical = 8.dp), color = Color(0xFFEEEEEE))
 
-            Text(
-                text = section.content,
-                fontSize = fontSizeSp.sp,
-                lineHeight = (fontSizeSp + 8).sp,
-                color = Color(0xFF2D2D2D)
-            )
+                Text(
+                    text = section.content,
+                    fontSize = fontSizeSp.sp,
+                    lineHeight = (fontSizeSp + 8).sp,
+                    color = Color(0xFF2D2D2D)
+                )
+            }
         }
     }
 }

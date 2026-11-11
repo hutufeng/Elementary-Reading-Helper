@@ -41,6 +41,7 @@ data class ReadingUiState(
     val speechRate: Float = 0.88f,                       // 朗读语速 (0.5x ~ 1.5x)
     val isDetailedMode: Boolean = false,                 // 【需求 1】逐句精讲开关：默认关闭 (false)
     val engineMode: String = "API",                      // 伴读引擎："API" ⇋ "DEEPSEEK_WEB"
+    val isSessionLocked: Boolean = false,                // 会话锁定防呆机制：一旦开启推导即锁定，换篇必须点【新一课】
     val apiBaseUrl: String = AppSettingsManager.DEFAULT_BASE_URL,
     val modelName: String = AppSettingsManager.DEFAULT_MODEL_NAME,
     val isCheckingUpdate: Boolean = false,               // 是否正在检测更新
@@ -78,15 +79,17 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun updateInputText(text: String) {
+        if (_uiState.value.isSessionLocked) return // 已锁定当前会话，禁止修改
         _uiState.value = _uiState.value.copy(inputText = text)
     }
 
     fun clearInputText() {
+        if (_uiState.value.isSessionLocked) return
         _uiState.value = _uiState.value.copy(inputText = "")
     }
 
     /**
-     * 开启全新一课：彻底重置所有会话、输入内容与推导树
+     * 开启全新一课：彻底重置所有会话、输入内容与推导树，解锁主输入框
      */
     fun startNewLesson() {
         stopReadingAssistant()
@@ -97,7 +100,8 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
             chatHistory = emptyList(),
             chatQuestion = "",
             isLoading = false,
-            isChatLoading = false
+            isChatLoading = false,
+            isSessionLocked = false // 解除锁定
         )
     }
 
@@ -185,6 +189,7 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
      */
     fun processImageUris(uris: List<Uri>) {
         if (uris.isEmpty()) return
+        if (_uiState.value.isSessionLocked) return // 已锁定当前会话，必须点击【新一课】才能开启新篇
         stopReadingAssistant()
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true)
@@ -204,7 +209,8 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
                 }
                 val combinedText = textBuilder.toString().trim()
                 if (combinedText.isNotBlank()) {
-                    _uiState.value = _uiState.value.copy(inputText = combinedText)
+                    // 先复位 isLoading 为 false，确保随后调用的 startReadingAssistant 不被防重入逻辑拦截
+                    _uiState.value = _uiState.value.copy(inputText = combinedText, isLoading = false)
                     startReadingAssistant(combinedText)
                 } else {
                     _uiState.value = _uiState.value.copy(isLoading = false)
@@ -229,6 +235,7 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
         readingJob = viewModelScope.launch {
             _uiState.value = _uiState.value.copy(
                 isLoading = true,
+                isSessionLocked = true, // 启动推导后立即锁定会话！杜绝二次输入与混杂错误
                 readingResult = "",
                 sections = emptyList(),
                 chatHistory = emptyList() // 彻底隔离：启动新一课推导时自动清空历史问答，杜绝串台
@@ -263,15 +270,19 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
     }
 
     /**
-     * 将 Markdown 智能解析为段落卡片 (供每段独立点读)
+     * 将 Markdown 智能解析为段落卡片 (过滤多余大标题/引言前缀，保留生字词与考点干货，供每段独立折叠点读)
      */
     private fun parseSections(markdown: String): List<ReadingSection> {
         if (markdown.isBlank()) return emptyList()
-        val parts = markdown.split(Regex("(?=### )"))
+        val cleanedMarkdown = markdown
+            .replace(Regex("^#+\\s*.*全景深度.*考点清单.*\\R*", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("^.*全景深度导读与核心考点清单.*(?=\\R)", RegexOption.IGNORE_CASE), "")
+            .trim()
+        val parts = cleanedMarkdown.split(Regex("(?=### )"))
         var index = 0
         return parts.mapNotNull { part ->
             val trimmed = part.trim()
-            if (trimmed.isBlank() || trimmed == "---") null
+            if (trimmed.isBlank() || trimmed == "---" || !trimmed.startsWith("### ")) null
             else {
                 val lines = trimmed.lines()
                 val firstLine = lines.firstOrNull()?.replace("#", "")?.trim() ?: "导读精要"

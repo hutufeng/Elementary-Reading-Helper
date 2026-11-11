@@ -15,6 +15,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -52,6 +53,7 @@ fun MathSolverScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     val authStatus by bridgeManager.authStatus.collectAsState()
     val solveStatus by bridgeManager.solveStatus.collectAsState()
     val thinkingText by bridgeManager.currentThinking.collectAsState()
@@ -69,8 +71,10 @@ fun MathSolverScreen(
     // 0: 🌐 HTML 富文本排版, 1: 📝 Markdown 纯文本排版
     var displayMode by remember { mutableIntStateOf(0) }
     var problemText by remember { mutableStateOf("") }
-    var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
-    var selectedImageBase64 by remember { mutableStateOf<String?>(null) }
+    var selectedImageUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    var selectedImageBase64List by remember { mutableStateOf<List<String>>(emptyList()) }
+    var isCompressingImages by remember { mutableStateOf(false) }
+    var isSessionLocked by remember { mutableStateOf(false) } // 会话锁定防呆状态机
     var enableR1 by remember { mutableStateOf(true) }
     var isThinkingExpanded by remember { mutableStateOf(false) }
     var followUpQuestion by remember { mutableStateOf("") }
@@ -84,15 +88,18 @@ fun MathSolverScreen(
         }
     }
 
-    // 图片选取器 (带采样防 OOM 压缩)
-    val imgPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-        uri?.let {
-            selectedImageUri = it
-            val b64 = compressImageToBase64(context, it)
-            if (b64 != null) {
-                selectedImageBase64 = b64
-            } else {
-                Toast.makeText(context, "图片处理失败，请重试", Toast.LENGTH_SHORT).show()
+    // 试卷/题目多图选择器 (支持多选照片直接直发 DeepSeek 官方，不走本地 OCR)
+    val imgPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris: List<Uri> ->
+        if (uris.isNotEmpty()) {
+            selectedImageUris = uris
+            isCompressingImages = true
+            coroutineScope.launch(Dispatchers.IO) {
+                val list = mutableListOf<String>()
+                for (uri in uris) {
+                    compressImageToBase64(context, uri)?.let { list.add(it) }
+                }
+                selectedImageBase64List = list
+                isCompressingImages = false
             }
         }
     }
@@ -242,16 +249,17 @@ fun MathSolverScreen(
                         }
 
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            // 开启新一题 (隔离上下文)
+                            // 开启新一题 (隔离上下文，解锁主输入框)
                             Button(
                                 onClick = {
                                     voiceManager.stopSpeaking()
                                     problemText = ""
-                                    selectedImageUri = null
-                                    selectedImageBase64 = null
+                                    selectedImageUris = emptyList()
+                                    selectedImageBase64List = emptyList()
                                     followUpQuestion = ""
+                                    isSessionLocked = false
                                     bridgeManager.startNewChat()
-                                    Toast.makeText(context, "已开启全新题目，上下文已重置！", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "已开启全新题目，主输入框已解锁！", Toast.LENGTH_SHORT).show()
                                 },
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                                 modifier = Modifier.height(30.dp),
@@ -321,44 +329,87 @@ fun MathSolverScreen(
                 elevation = CardDefaults.cardElevation(2.dp)
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
-                    // 题目图片缩略图展示
-                    AnimatedVisibility(visible = selectedImageUri != null) {
-                        val bitmap = rememberBitmapFromUri(context, selectedImageUri)
-                        Box(modifier = Modifier.fillMaxWidth().height(160.dp).padding(bottom = 8.dp)) {
-                            if (bitmap != null) {
-                                Image(
-                                    bitmap = bitmap,
-                                    contentDescription = "题目截图",
-                                    modifier = Modifier.fillMaxSize().background(Color(0xFFEEEEEE), RoundedCornerShape(6.dp)),
-                                    contentScale = ContentScale.Fit
-                                )
-                            } else {
-                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                    // 题目多图横向滚动缩略图展示 (直传 DeepSeek 官方，不走本地 OCR)
+                    AnimatedVisibility(visible = selectedImageUris.isNotEmpty()) {
+                        Column(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("📷 已选 ${selectedImageUris.size} 张题目/试卷原图 (直传官方)", fontSize = 12.sp, color = Color(0xFF1B3B5A), fontWeight = FontWeight.SemiBold)
+                                if (!isSessionLocked) {
+                                    TextButton(onClick = {
+                                        selectedImageUris = emptyList()
+                                        selectedImageBase64List = emptyList()
+                                    }) {
+                                        Text("全部清除", fontSize = 11.sp, color = Color.Red)
+                                    }
                                 }
                             }
-                            IconButton(
-                                onClick = {
-                                    selectedImageUri = null
-                                    selectedImageBase64 = null
-                                },
-                                modifier = Modifier.align(Alignment.TopEnd).size(28.dp)
+                            Row(
+                                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Icon(Icons.Default.Close, contentDescription = "移除图片", tint = Color.Red)
+                                selectedImageUris.forEachIndexed { idx, uri ->
+                                    val bitmap = rememberBitmapFromUri(context, uri)
+                                    Box(modifier = Modifier.size(width = 90.dp, height = 110.dp)) {
+                                        if (bitmap != null) {
+                                            Image(
+                                                bitmap = bitmap,
+                                                contentDescription = "第 ${idx + 1} 张",
+                                                modifier = Modifier.fillMaxSize().background(Color(0xFFEEEEEE), RoundedCornerShape(6.dp)),
+                                                contentScale = ContentScale.Crop
+                                            )
+                                        } else {
+                                            Box(modifier = Modifier.fillMaxSize().background(Color(0xFFEEEEEE), RoundedCornerShape(6.dp)), contentAlignment = Alignment.Center) {
+                                                CircularProgressIndicator(modifier = Modifier.size(16.dp))
+                                            }
+                                        }
+                                        Text(
+                                            text = "第 ${idx + 1} 张",
+                                            fontSize = 10.sp,
+                                            color = Color.White,
+                                            modifier = Modifier.align(Alignment.BottomStart).background(Color(0x99000000), RoundedCornerShape(topEnd = 4.dp)).padding(horizontal = 4.dp, vertical = 2.dp)
+                                        )
+                                        if (!isSessionLocked) {
+                                            IconButton(
+                                                onClick = {
+                                                    val newUris = selectedImageUris.toMutableList().also { it.removeAt(idx) }
+                                                    val newB64s = selectedImageBase64List.toMutableList().also { if (idx < it.size) it.removeAt(idx) }
+                                                    selectedImageUris = newUris
+                                                    selectedImageBase64List = newB64s
+                                                },
+                                                modifier = Modifier.align(Alignment.TopEnd).size(22.dp).background(Color(0x88000000), RoundedCornerShape(11.dp))
+                                            ) {
+                                                Icon(Icons.Default.Close, contentDescription = "移除", tint = Color.White, modifier = Modifier.size(13.dp))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if (isCompressingImages) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 1.5.dp)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("正在准备图片上传...", fontSize = 11.sp, color = Color.Gray)
+                                }
                             }
                         }
                     }
 
-                    // 题目文字补充框
+                    // 题目文字补充框 (支持单次输入防呆锁定)
                     OutlinedTextField(
                         value = problemText,
-                        onValueChange = { problemText = it },
+                        onValueChange = { if (!isSessionLocked) problemText = it },
+                        readOnly = isSessionLocked,
                         placeholder = {
                             Text(
-                                text = if (selectedImageUri != null)
-                                    "图片已就绪！可直接点击下方【开始深度推导】，或补充具体问法..."
+                                text = if (selectedImageUris.isNotEmpty())
+                                    "已选 ${selectedImageUris.size} 张原图！可直接点击下方【开始推导】直传官方解析，或补充具体设问..."
                                 else
-                                    "点击左下方【拍题/传原图】直发几何图/坐标系；或直接输入题目文字与公式...",
+                                    "点击左下方【传题目原图】支持多选试卷/几何图；或直接输入题目文字与公式...",
                                 fontSize = 13.sp,
                                 lineHeight = 18.sp
                             )
@@ -366,6 +417,16 @@ fun MathSolverScreen(
                         modifier = Modifier.fillMaxWidth().heightIn(min = 90.dp, max = 180.dp),
                         textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
                     )
+
+                    if (isSessionLocked) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "🔒 当前题目已锁定推导。如需新题请点击上方【新题目】；追问请在下方追问区。",
+                            fontSize = 11.sp,
+                            color = Color(0xFFD97706),
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
 
                     Spacer(modifier = Modifier.height(10.dp))
 
@@ -376,13 +437,14 @@ fun MathSolverScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         FilledTonalButton(
+                            enabled = !isSessionLocked,
                             onClick = { imgPicker.launch("image/*") },
                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                             modifier = Modifier.height(36.dp)
                         ) {
                             Icon(Icons.Default.PhotoCamera, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text(if (selectedImageUri == null) "传题目原图" else "重选原图", fontSize = 12.sp)
+                            Text(if (selectedImageUris.isEmpty()) "传题目多图" else "重选图片 (${selectedImageUris.size}张)", fontSize = 12.sp)
                         }
 
                         // R1 深度思考开关
@@ -390,12 +452,13 @@ fun MathSolverScreen(
                             Text("🧠 R1深度思考", fontSize = 11.sp, color = if (enableR1) Color(0xFF1B3B5A) else Color.Gray)
                             Switch(
                                 checked = enableR1,
+                                enabled = !isSessionLocked,
                                 onCheckedChange = { enableR1 = it },
                                 modifier = Modifier.scale(0.8f)
                             )
                         }
 
-                        // 核心推导控制按钮 (推导中支持一键【⏹️ 停止】)
+                        // 核心推导控制按钮 (推导中支持【⏹️ 停止】，完成后引导【➕ 新题目】)
                         if (solveStatus == SolveStatus.SOLVING) {
                             Button(
                                 onClick = { bridgeManager.stopSolving() },
@@ -406,6 +469,25 @@ fun MathSolverScreen(
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text("停止推导", fontSize = 12.sp)
                             }
+                        } else if (isSessionLocked) {
+                            Button(
+                                onClick = {
+                                    voiceManager.stopSpeaking()
+                                    problemText = ""
+                                    selectedImageUris = emptyList()
+                                    selectedImageBase64List = emptyList()
+                                    followUpQuestion = ""
+                                    isSessionLocked = false
+                                    bridgeManager.startNewChat()
+                                    Toast.makeText(context, "已开启全新题目，主输入框已解锁！", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.height(36.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2C6454))
+                            ) {
+                                Icon(Icons.Default.Add, null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("新题目", fontSize = 12.sp)
+                            }
                         } else {
                             Button(
                                 onClick = {
@@ -414,12 +496,18 @@ fun MathSolverScreen(
                                         Toast.makeText(context, "请先在网页端登录 DeepSeek", Toast.LENGTH_SHORT).show()
                                         return@Button
                                     }
-                                    if (problemText.isBlank() && selectedImageBase64 == null) {
+                                    if (problemText.isBlank() && selectedImageBase64List.isEmpty()) {
                                         Toast.makeText(context, "请先上传题目原图或输入题目内容", Toast.LENGTH_SHORT).show()
                                         return@Button
                                     }
-                                    bridgeManager.solveProblem(problemText, selectedImageBase64, enableR1)
+                                    isSessionLocked = true
+                                    bridgeManager.solveProblem(
+                                        rawProblemText = problemText,
+                                        imageBase64List = selectedImageBase64List,
+                                        enableR1 = enableR1
+                                    )
                                 },
+                                enabled = !isCompressingImages,
                                 modifier = Modifier.height(36.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1B3B5A))
                             ) {

@@ -612,9 +612,13 @@ class DeepSeekBridgeManager(private val context: Context) {
      * 发送推导请求 (支持自定义 Prompt / 图片直发 / R1 深度思考联动 / 状态打点 / 复合点击回车)
      * 理科默认开启 R1，语文伴读默认关闭 R1 (以标准极速模式直接推导)
      */
+    /**
+     * 发送推导请求 (支持多图直传 + 定制 Prompt + R1 深度思考联动 + 状态打点 + 复合点击回车)
+     * 理科默认开启 R1，语文伴读默认关闭 R1 (以标准极速模式直接推导)
+     */
     fun solveProblem(
         rawProblemText: String,
-        imageBase64: String?,
+        imageBase64List: List<String> = emptyList(),
         enableR1: Boolean = true,
         customPrompt: String? = null
     ) {
@@ -623,13 +627,22 @@ class DeepSeekBridgeManager(private val context: Context) {
             return
         }
 
+        val hasImages = imageBase64List.isNotEmpty()
+        val imageCount = imageBase64List.size
+
         // 新推导开始：清空旧的追问历史和答案，开辟纯净上下文！
         _qaHistory.value = emptyList()
         _currentThinking.value = ""
         _currentAnswer.value = ""
         _currentAnswerHtml.value = ""
         _currentPlainText.value = ""
-        lastSentQuestion = rawProblemText.ifBlank { "【输入内容】" }
+        lastSentQuestion = if (rawProblemText.isNotBlank()) {
+            rawProblemText
+        } else if (hasImages) {
+            "【${imageCount} 张书籍/试卷图片】"
+        } else {
+            "【输入内容】"
+        }
         _solveStatus.value = SolveStatus.SOLVING
         _errorMessage.value = null
         _stepDiagnosis.value = "正在初始化推导会话..."
@@ -638,6 +651,8 @@ class DeepSeekBridgeManager(private val context: Context) {
         startActivePolling()
 
         val promptText = customPrompt ?: buildProblemPrompt(rawProblemText)
+        val imagesJsonArray = org.json.JSONArray(imageBase64List).toString()
+        val maxWaitMs = if (hasImages) (10000 + imageCount * 4000).coerceAtMost(30000) else 2500
 
         val js = """
             (async function() {
@@ -730,21 +745,24 @@ class DeepSeekBridgeManager(private val context: Context) {
                         }
                     }
 
-                    // 2. 注入图片并智能等待上传完成态
-                    ${if (!imageBase64.isNullOrBlank()) """
-                    logStep("正在注入题目原图...");
+                    // 2. 注入多张图片并智能等待上传解析完成态 (多图原生直发，不走本地 OCR)
+                    ${if (hasImages) """
+                    logStep("正在注入 ${imageCount} 张图片并上传...");
                     try {
-                        const res = await fetch("${imageBase64}");
-                        const blob = await res.blob();
-                        const file = new File([blob], "problem_image.jpg", { type: "image/jpeg" });
+                        const b64List = $imagesJsonArray;
                         const fileInput = document.querySelector('input[type="file"][accept*="image"]') 
                                        || document.querySelector('input[type="file"]');
-                        if (fileInput) {
+                        if (fileInput && b64List.length > 0) {
                             const dataTransfer = new DataTransfer();
-                            dataTransfer.items.add(file);
+                            for (let i = 0; i < b64List.length; i++) {
+                                const res = await fetch(b64List[i]);
+                                const blob = await res.blob();
+                                const file = new File([blob], "image_" + (i + 1) + ".jpg", { type: "image/jpeg" });
+                                dataTransfer.items.add(file);
+                            }
                             fileInput.files = dataTransfer.files;
                             fileInput.dispatchEvent(new Event('change', { bubbles: true }));
-                            logStep("原图已注入，正在等待官方解析与上传就绪...");
+                            logStep("已注入 ${imageCount} 张图片，正在等待官方解析与上传就绪...");
                         }
                     } catch(err) {
                         logStep("图片注入跳过: " + err.message);
@@ -806,11 +824,11 @@ class DeepSeekBridgeManager(private val context: Context) {
                         return null;
                     }
 
-                    // 5. 智能等待图片上传完成态与发送就绪 (最长等待 12 秒)
-                    const hasImage = ${!imageBase64.isNullOrBlank()};
-                    const maxWait = hasImage ? 12000 : 2500;
+                    // 5. 智能等待图片上传完成态与发送就绪
+                    const hasImage = $hasImages;
+                    const maxWait = $maxWaitMs;
                     const startTime = Date.now();
-                    logStep(hasImage ? "正在等待题目图片上传解析完成..." : "正在准备自动发送...");
+                    logStep(hasImage ? "正在等待 ${imageCount} 张图片上传解析完成..." : "正在准备自动发送...");
 
                     let sendBtn = null;
                     while (Date.now() - startTime < maxWait) {
@@ -857,6 +875,19 @@ class DeepSeekBridgeManager(private val context: Context) {
             webView.resumeTimers()
             webView.evaluateJavascript(js, null)
         }
+    }
+
+    /**
+     * 兼容单图调用的重载方法
+     */
+    fun solveProblem(
+        rawProblemText: String,
+        imageBase64: String?,
+        enableR1: Boolean = true,
+        customPrompt: String? = null
+    ) {
+        val list = if (imageBase64.isNullOrBlank()) emptyList() else listOf(imageBase64)
+        solveProblem(rawProblemText, list, enableR1, customPrompt)
     }
 
     /**
