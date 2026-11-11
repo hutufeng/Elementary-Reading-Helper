@@ -44,6 +44,7 @@ import com.assistant.reading.core.bridge.SolveStatus
 import com.assistant.reading.core.voice.PlaybackState
 import com.assistant.reading.core.voice.VoiceManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
