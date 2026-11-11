@@ -10,6 +10,8 @@ import com.assistant.reading.core.ai.ZhipuAiClient
 import com.assistant.reading.core.ocr.OcrManager
 import com.assistant.reading.core.update.UpdateInfo
 import com.assistant.reading.core.update.UpdateManager
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -56,6 +58,8 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
         modelNameProvider = { AppSettingsManager.getModelName(getApplication()) }
     )
 
+    private var readingJob: Job? = null
+
     private val _uiState = MutableStateFlow(
         ReadingUiState(
             speechRate = AppSettingsManager.getSpeechRate(application),
@@ -68,6 +72,26 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
 
     fun updateInputText(text: String) {
         _uiState.value = _uiState.value.copy(inputText = text)
+    }
+
+    fun clearInputText() {
+        _uiState.value = _uiState.value.copy(inputText = "")
+    }
+
+    /**
+     * 开启全新一课：彻底重置所有会话、输入内容与推导树
+     */
+    fun startNewLesson() {
+        stopReadingAssistant()
+        _uiState.value = _uiState.value.copy(
+            inputText = "",
+            readingResult = "",
+            sections = emptyList(),
+            chatHistory = emptyList(),
+            chatQuestion = "",
+            isLoading = false,
+            isChatLoading = false
+        )
     }
 
     fun updateChatQuestion(text: String) {
@@ -143,15 +167,41 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
     fun isKeyConfigured(): Boolean = AppSettingsManager.isKeyConfigured(getApplication())
 
     /**
-     * 拍照识别后自动开始深度导读
+     * 拍照识别单张图片 (兼容旧接口)
      */
     fun processImageUri(uri: Uri) {
+        processImageUris(listOf(uri))
+    }
+
+    /**
+     * 支持多张书籍/课文图片批量 OCR 识别并合并全景推导
+     */
+    fun processImageUris(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        stopReadingAssistant()
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true)
             try {
-                val extracted = ocrManager.recognizeTextFromUri(uri)
-                _uiState.value = _uiState.value.copy(inputText = extracted)
-                startReadingAssistant(extracted)
+                val textBuilder = StringBuilder()
+                for ((index, uri) in uris.withIndex()) {
+                    val extracted = ocrManager.recognizeTextFromUri(uri).trim()
+                    if (extracted.isNotBlank()) {
+                        if (textBuilder.isNotEmpty()) {
+                            textBuilder.append("\n\n")
+                        }
+                        if (uris.size > 1) {
+                            textBuilder.append("【第 ${index + 1} 页】\n")
+                        }
+                        textBuilder.append(extracted)
+                    }
+                }
+                val combinedText = textBuilder.toString().trim()
+                if (combinedText.isNotBlank()) {
+                    _uiState.value = _uiState.value.copy(inputText = combinedText)
+                    startReadingAssistant(combinedText)
+                } else {
+                    _uiState.value = _uiState.value.copy(isLoading = false)
+                }
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(isLoading = false)
             }
@@ -160,26 +210,49 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
 
     /**
      * 启动全景导学 (依据文本自适应深度)
+     * 防重入、会话彻底隔离、支持任务生命周期管控
      */
     fun startReadingAssistant(query: String = _uiState.value.inputText) {
-        if (query.isBlank()) return
-        viewModelScope.launch {
+        val trimmed = query.trim()
+        if (trimmed.isBlank() || _uiState.value.isLoading) return
+
+        // 停止前序可能在执行的任务
+        readingJob?.cancel()
+
+        readingJob = viewModelScope.launch {
             _uiState.value = _uiState.value.copy(
                 isLoading = true,
                 readingResult = "",
-                sections = emptyList()
+                sections = emptyList(),
+                chatHistory = emptyList() // 彻底隔离：启动新一课推导时自动清空历史问答，杜绝串台
             )
 
-            var accumulated = ""
-            aiClient.streamAsk(query, isDetailedMode = _uiState.value.isDetailedMode).collect { chunk ->
-                accumulated += chunk
-                _uiState.value = _uiState.value.copy(
-                    readingResult = accumulated,
-                    sections = parseSections(accumulated)
-                )
+            try {
+                var accumulated = ""
+                aiClient.streamAsk(trimmed, isDetailedMode = _uiState.value.isDetailedMode).collect { chunk ->
+                    accumulated += chunk
+                    _uiState.value = _uiState.value.copy(
+                        readingResult = accumulated,
+                        sections = parseSections(accumulated)
+                    )
+                }
+            } catch (e: CancellationException) {
+                // 用户主动停止或取消，保留当前已生成的阶段性内容，优雅退出
+            } catch (e: Exception) {
+                // 异常情况下维持现有结果
+            } finally {
+                _uiState.value = _uiState.value.copy(isLoading = false)
             }
-            _uiState.value = _uiState.value.copy(isLoading = false)
         }
+    }
+
+    /**
+     * 停止或取消当前正在进行的全景推导任务
+     */
+    fun stopReadingAssistant() {
+        readingJob?.cancel()
+        readingJob = null
+        _uiState.value = _uiState.value.copy(isLoading = false)
     }
 
     /**

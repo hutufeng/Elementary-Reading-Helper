@@ -64,12 +64,14 @@ class MainActivity : ComponentActivity() {
                     voiceManager.setSpeechRate(uiState.speechRate)
                 }
 
-                // 图片选择 / 拍照
-                val imgPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-                    uri?.let { vm.processImageUri(it) }
+                // 多图选择 / 拍照识别 (支持多选书籍与课文)
+                val imgPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris: List<Uri> ->
+                    if (uris.isNotEmpty()) {
+                        vm.processImageUris(uris)
+                    }
                 }
 
-                // 语音输入：短文篇名录入
+                // 语音输入：短文篇名录入 (宽限静音超时，避免说话慢报错)
                 val speechLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
                     if (res.resultCode == Activity.RESULT_OK) {
                         res.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.let { spoken ->
@@ -236,11 +238,26 @@ class MainActivity : ComponentActivity() {
                         ) {
                             FilledTonalButton(
                                 onClick = {
+                                    voiceManager.stopSpeaking()
+                                    vm.startNewLesson()
+                                    Toast.makeText(context, "已开启全新一课，会话已就绪", Toast.LENGTH_SHORT).show()
+                                }
+                            ) {
+                                Icon(Icons.Default.Add, null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("新一课")
+                            }
+
+                            FilledTonalButton(
+                                onClick = {
                                     try {
                                         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                                             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                                             putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.CHINESE.toString())
                                             putExtra(RecognizerIntent.EXTRA_PROMPT, "说出想读的课文名、名篇或短文...")
+                                            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 3000L)
+                                            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 3000L)
+                                            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 3000L)
                                         }
                                         speechLauncher.launch(intent)
                                     } catch (e: Exception) {
@@ -305,13 +322,20 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(modifier = Modifier.height(10.dp))
 
-                        // 2. 课文/短文全能输入框
+                        // 2. 课文/短文全能输入框 (支持一键清空)
                         OutlinedTextField(
                             value = uiState.inputText,
                             onValueChange = { vm.updateInputText(it) },
                             placeholder = { Text("输入篇名、课本年级课号（如：小学三年级上册第十课、小石潭记、背影）或直接粘贴长短文...") },
                             modifier = Modifier.fillMaxWidth().height(110.dp),
-                            textStyle = LocalTextStyle.current.copy(fontSize = uiState.fontSizeSp.sp)
+                            textStyle = LocalTextStyle.current.copy(fontSize = uiState.fontSizeSp.sp),
+                            trailingIcon = {
+                                if (uiState.inputText.isNotEmpty()) {
+                                    IconButton(onClick = { vm.clearInputText() }) {
+                                        Icon(Icons.Default.Clear, contentDescription = "清空输入框", tint = Color.Gray)
+                                    }
+                                }
+                            }
                         )
 
                         Spacer(modifier = Modifier.height(8.dp))
@@ -326,7 +350,7 @@ class MainActivity : ComponentActivity() {
                                 Switch(
                                     checked = uiState.isDetailedMode,
                                     onCheckedChange = { vm.toggleDetailedMode(it) }
-                                )
+                                    )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Column {
                                     Text("📜 开启全文逐句精讲与文白对照 (默认关闭)", fontSize = 13.sp, color = Color(0xFF2C3E50))
@@ -337,21 +361,38 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(modifier = Modifier.height(8.dp))
 
-                        Button(
-                            onClick = {
-                                if (!vm.isKeyConfigured()) {
-                                    showSettingsDialog = true
-                                    Toast.makeText(context, "请先在设置中配置您的 AI API Key 即可使用", Toast.LENGTH_LONG).show()
-                                } else {
-                                    vm.startReadingAssistant()
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth().height(46.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2C6454))
-                        ) {
-                            Icon(Icons.Default.AutoStories, null)
-                            Spacer(Modifier.width(8.dp))
-                            Text("开始全景深度导读", fontSize = 16.sp)
+                        // 开始全景导读 / 停止生成 按钮 (防重入 + 支持停止未完成任务)
+                        if (uiState.isLoading) {
+                            Button(
+                                onClick = {
+                                    vm.stopReadingAssistant()
+                                    voiceManager.stopSpeaking()
+                                    Toast.makeText(context, "已停止导读生成", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.fillMaxWidth().height(46.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC0392B)) // 红色醒目停止按钮
+                            ) {
+                                Icon(Icons.Default.Stop, null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("⏹️ 停止生成", fontSize = 16.sp)
+                            }
+                        } else {
+                            Button(
+                                onClick = {
+                                    if (!vm.isKeyConfigured()) {
+                                        showSettingsDialog = true
+                                        Toast.makeText(context, "请先在设置中配置您的 AI API Key 即可使用", Toast.LENGTH_LONG).show()
+                                    } else {
+                                        vm.startReadingAssistant()
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth().height(46.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2C6454))
+                            ) {
+                                Icon(Icons.Default.AutoStories, null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("开始全景深度导读", fontSize = 16.sp)
+                            }
                         }
 
                         if (uiState.isLoading) {
@@ -449,7 +490,14 @@ class MainActivity : ComponentActivity() {
                                         onValueChange = { vm.updateChatQuestion(it) },
                                         placeholder = { Text("向导师提问...", fontSize = 14.sp) },
                                         modifier = Modifier.weight(1f).height(52.dp),
-                                        singleLine = true
+                                        singleLine = true,
+                                        trailingIcon = {
+                                            if (uiState.chatQuestion.isNotEmpty()) {
+                                                IconButton(onClick = { vm.updateChatQuestion("") }) {
+                                                    Icon(Icons.Default.Clear, contentDescription = "清空提问", tint = Color.Gray)
+                                                }
+                                            }
+                                        }
                                     )
 
                                     IconButton(
@@ -459,6 +507,9 @@ class MainActivity : ComponentActivity() {
                                                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                                                     putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.CHINESE.toString())
                                                     putExtra(RecognizerIntent.EXTRA_PROMPT, "说出你的问题...")
+                                                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 3000L)
+                                                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 3000L)
+                                                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 3000L)
                                                 }
                                                 questionSpeechLauncher.launch(intent)
                                             } catch (e: Exception) {
