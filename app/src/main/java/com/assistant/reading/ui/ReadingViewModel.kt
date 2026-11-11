@@ -270,7 +270,7 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
     }
 
     /**
-     * 将 Markdown 智能解析为段落卡片 (过滤多余大标题/引言前缀，保留生字词与考点干货，供每段独立折叠点读)
+     * 将 Markdown 智能解析为段落卡片 (过滤多余大标题/引言前缀，自适应识别5大关键点，确保精准拆分折叠)
      */
     private fun parseSections(markdown: String): List<ReadingSection> {
         if (markdown.isBlank()) return emptyList()
@@ -278,22 +278,66 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
             .replace(Regex("^#+\\s*.*全景深度.*考点清单.*\\R*", RegexOption.IGNORE_CASE), "")
             .replace(Regex("^.*全景深度导读与核心考点清单.*(?=\\R)", RegexOption.IGNORE_CASE), "")
             .trim()
-        val parts = cleanedMarkdown.split(Regex("(?=### )"))
-        var index = 0
-        return parts.mapNotNull { part ->
-            val trimmed = part.trim()
-            if (trimmed.isBlank() || trimmed == "---" || !trimmed.startsWith("### ")) null
-            else {
-                val lines = trimmed.lines()
-                val firstLine = lines.firstOrNull()?.replace("#", "")?.trim() ?: "导读精要"
-                val body = lines.drop(1).joinToString("\n").trim()
-                ReadingSection(
-                    id = index++,
-                    title = firstLine,
-                    content = if (body.isBlank()) trimmed else body
+
+        val lines = cleanedMarkdown.lines()
+        val sections = mutableListOf<ReadingSection>()
+        var sectionIndex = 0
+
+        val headerPattern = Regex(
+            """^(?:#{1,6}\s*)?(?:[^\w\s\u4e00-\u9fa5]{1,4}\s*)?(?:[一二三四五]、|（[一二三四五]）|【[一二三四五]】|第[一二三四五]部分|零障碍逐句精讲|文白全景对照).*"""
+        )
+
+        var currentTitle: String? = null
+        val currentBody = StringBuilder()
+
+        fun commitCurrentSection() {
+            val title = currentTitle
+            if (title != null) {
+                val content = currentBody.toString().trim()
+                sections.add(
+                    ReadingSection(
+                        id = sectionIndex++,
+                        title = title,
+                        content = if (content.isBlank()) "（暂无详细解析）" else content
+                    )
+                )
+                currentBody.clear()
+            }
+        }
+
+        for (rawLine in lines) {
+            val trimmed = rawLine.trim()
+            if (trimmed == "---") continue
+            if (trimmed.contains("全景深度导读与核心考点清单") || trimmed.contains("全景深度导读与全套知识点清单")) continue
+
+            if (headerPattern.matches(trimmed)) {
+                commitCurrentSection()
+                currentTitle = trimmed.replace(Regex("^#+\\s*"), "").trim()
+            } else if (currentTitle != null) {
+                currentBody.append(rawLine).append("\n")
+            }
+        }
+        commitCurrentSection()
+
+        if (sections.isEmpty()) {
+            val fallbackParts = cleanedMarkdown.split(Regex("(?=### )"))
+            for (part in fallbackParts) {
+                val trimmed = part.trim()
+                if (trimmed.isBlank() || trimmed == "---") continue
+                val partLines = trimmed.lines()
+                val firstLine = partLines.firstOrNull()?.replace("#", "")?.trim() ?: "导读核心"
+                val body = partLines.drop(1).joinToString("\n").trim()
+                sections.add(
+                    ReadingSection(
+                        id = sectionIndex++,
+                        title = firstLine,
+                        content = if (body.isBlank()) trimmed else body
+                    )
                 )
             }
         }
+
+        return sections
     }
 
     /**

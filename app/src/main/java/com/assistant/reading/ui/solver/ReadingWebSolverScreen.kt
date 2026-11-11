@@ -811,7 +811,7 @@ fun ReadingWebSolverScreen(
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Text(
-                                            text = "📚 5大导学关键点 (默认已折叠)",
+                                            text = "📚 导学核心关键点 (${readingSections.size}项，默认折叠)",
                                             fontSize = 12.sp,
                                             color = Color(0xFF666666),
                                             fontWeight = FontWeight.Medium
@@ -1047,7 +1047,7 @@ fun ReadingWebSolverScreen(
 }
 
 /**
- * 智能清洗并解析 Markdown 为结构化章节 (过滤模型生成的多余前缀与总论标题，保留重要知识点考点等干货)
+ * 智能清洗并解析 Markdown 为结构化章节 (过滤模型生成的多余前缀与总论标题，自适应识别5大关键点，确保精准拆分折叠)
  */
 fun parseReadingSections(markdown: String): Pair<String?, List<ReadingSection>> {
     if (markdown.isBlank()) return Pair(null, emptyList())
@@ -1058,30 +1058,69 @@ fun parseReadingSections(markdown: String): Pair<String?, List<ReadingSection>> 
         .replace(Regex("^.*全景深度导读与核心考点清单.*(?=\\R)", RegexOption.IGNORE_CASE), "")
         .trim()
 
-    val parts = cleanedMarkdown.split(Regex("(?=### )"))
+    val lines = cleanedMarkdown.lines()
     var bookHeader: String? = null
     val sections = mutableListOf<ReadingSection>()
     var sectionIndex = 0
 
-    for (part in parts) {
-        val trimmed = part.trim()
-        if (trimmed.isBlank() || trimmed == "---") continue
+    // 关键点标题识别正则（覆盖带 #/不带 #、带/不带 Emoji、中文汉字序号与逐句精讲）
+    val headerPattern = Regex(
+        """^(?:#{1,6}\s*)?(?:[^\w\s\u4e00-\u9fa5]{1,4}\s*)?(?:[一二三四五]、|（[一二三四五]）|【[一二三四五]】|第[一二三四五]部分|零障碍逐句精讲|文白全景对照).*"""
+    )
 
-        if (!trimmed.startsWith("### ")) {
-            // 第一个 ### 之前的内容：可能是确认的篇名作者行 (例如《荷塘月色》（朱自清）)
-            // 过滤掉残留的任何导学前缀套话
-            val filteredLines = trimmed.lines().filter { line ->
-                val l = line.trim()
-                !l.contains("全景深度导读") && !l.contains("清单如下") && !l.contains("导学如下") && !l.contains("核心考点清单")
-            }
-            val headerText = filteredLines.joinToString("\n").trim()
-            if (headerText.isNotBlank()) {
-                bookHeader = headerText
-            }
+    var currentTitle: String? = null
+    val currentBody = StringBuilder()
+
+    fun commitCurrentSection() {
+        val title = currentTitle
+        if (title != null) {
+            val content = currentBody.toString().trim()
+            sections.add(
+                ReadingSection(
+                    id = sectionIndex++,
+                    title = title,
+                    content = if (content.isBlank()) "（暂无详细解析）" else content
+                )
+            )
+            currentBody.clear()
+        }
+    }
+
+    for (rawLine in lines) {
+        val trimmed = rawLine.trim()
+        if (trimmed == "---") continue
+
+        // 过滤掉残留的任何导学前缀套话
+        if (trimmed.contains("全景深度导读与核心考点清单") || trimmed.contains("全景深度导读与全套知识点清单")) {
+            continue
+        }
+
+        if (headerPattern.matches(trimmed)) {
+            // 匹配到了新的大关键点
+            commitCurrentSection()
+            currentTitle = trimmed.replace(Regex("^#+\\s*"), "").trim()
         } else {
-            val lines = trimmed.lines()
-            val firstLine = lines.firstOrNull()?.replace("#", "")?.trim() ?: "导读核心"
-            val body = lines.drop(1).joinToString("\n").trim()
+            if (currentTitle == null) {
+                // 尚未遇到第一个关键点之前的文本：作为篇名确认行（如《荷塘月色》（朱自清））
+                if (trimmed.isNotBlank() && !trimmed.contains("导学如下") && !trimmed.contains("导读如下") && !trimmed.contains("清单如下")) {
+                    bookHeader = if (bookHeader == null) trimmed else "$bookHeader $trimmed"
+                }
+            } else {
+                currentBody.append(rawLine).append("\n")
+            }
+        }
+    }
+    commitCurrentSection()
+
+    // 极端兜底：如果行扫描未能成功切分成多个，尝试旧版正则
+    if (sections.isEmpty()) {
+        val fallbackParts = cleanedMarkdown.split(Regex("(?=### )"))
+        for (part in fallbackParts) {
+            val trimmed = part.trim()
+            if (trimmed.isBlank() || trimmed == "---") continue
+            val partLines = trimmed.lines()
+            val firstLine = partLines.firstOrNull()?.replace("#", "")?.trim() ?: "导读核心"
+            val body = partLines.drop(1).joinToString("\n").trim()
             sections.add(
                 ReadingSection(
                     id = sectionIndex++,
@@ -1091,5 +1130,6 @@ fun parseReadingSections(markdown: String): Pair<String?, List<ReadingSection>> 
             )
         }
     }
+
     return Pair(bookHeader, sections)
 }

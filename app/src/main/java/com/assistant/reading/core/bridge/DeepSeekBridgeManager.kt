@@ -220,7 +220,13 @@ class DeepSeekBridgeManager(private val context: Context) {
                     // 2. 清除渲染噪音与交互按键 (只清除真正的交互按钮与图标，严禁误杀包含 action 等类名的推导容器)
                     clone.querySelectorAll('.katex-html, .katex-mathml, button, svg').forEach(el => el.remove());
 
-                    // 3. 规范段落与列表换行
+                    // 3. 规范标题、段落与列表换行 (保留 Markdown 章节前缀与骨架，确保大段落与关键点精准识别)
+                    clone.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(h => {
+                        const level = parseInt(h.tagName.substring(1)) || 3;
+                        const prefix = '#'.repeat(level);
+                        h.prepend(document.createTextNode("\n\n" + prefix + " "));
+                        h.append(document.createTextNode("\n\n"));
+                    });
                     clone.querySelectorAll('p').forEach(p => {
                         p.append(document.createTextNode("\n\n"));
                     });
