@@ -1047,26 +1047,15 @@ fun ReadingWebSolverScreen(
 }
 
 /**
- * 智能清洗并解析 Markdown 为结构化章节 (过滤模型生成的多余前缀与总论标题，自适应识别5大关键点，确保精准拆分折叠)
+ * 智能清洗并解析 Markdown 为结构化章节 (彻底过滤一二三四五前面的所有废话，双重语义校验精准识别5大关键点，确保无缝折叠点读)
  */
 fun parseReadingSections(markdown: String): Pair<String?, List<ReadingSection>> {
     if (markdown.isBlank()) return Pair(null, emptyList())
 
-    // 智能剔除模型开头可能输出的“全景深度导读与核心考点清单”等套话或大标题
-    val cleanedMarkdown = markdown
-        .replace(Regex("^#+\\s*.*全景深度.*考点清单.*\\R*", RegexOption.IGNORE_CASE), "")
-        .replace(Regex("^.*全景深度导读与核心考点清单.*(?=\\R)", RegexOption.IGNORE_CASE), "")
-        .trim()
-
-    val lines = cleanedMarkdown.lines()
+    val lines = markdown.lines()
     var bookHeader: String? = null
     val sections = mutableListOf<ReadingSection>()
     var sectionIndex = 0
-
-    // 关键点标题识别正则（覆盖带 #/不带 #、带/不带 Emoji、中文汉字序号与逐句精讲）
-    val headerPattern = Regex(
-        """^(?:#{1,6}\s*)?(?:[^\w\s\u4e00-\u9fa5]{1,4}\s*)?(?:[一二三四五]、|（[一二三四五]）|【[一二三四五]】|第[一二三四五]部分|零障碍逐句精讲|文白全景对照).*"""
-    )
 
     var currentTitle: String? = null
     val currentBody = StringBuilder()
@@ -1086,25 +1075,61 @@ fun parseReadingSections(markdown: String): Pair<String?, List<ReadingSection>> 
         }
     }
 
+    // 标题判定函数：结合序号与核心专属语义词，彻底根治符号/Emoji/标点差异导致五被漏掉的问题
+    fun matchSectionHeader(rawLine: String): String? {
+        val trimmed = rawLine.trim()
+        if (trimmed.isBlank() || trimmed == "---" || trimmed.length > 80) return null
+
+        // 排除正文里的数字小分项 (如 1. 2. 3. 4.)
+        if (Regex("""^[1-4][.、\s]""").containsMatchIn(trimmed)) {
+            return null
+        }
+
+        // 1. 核心专属关键词优先匹配 (最稳固、抗一切标点与格式扰动)
+        val isKeywordHit = trimmed.contains("零障碍逐句精讲") || trimmed.contains("文白全景对照") ||
+                trimmed.contains("这篇作品究竟讲了什么") || trimmed.contains("创作背景与时代风貌") ||
+                trimmed.contains("中心思想与内核概括") || trimmed.contains("核心主旨标准概括") ||
+                trimmed.contains("重要知识点·核心考点") || trimmed.contains("重要知识点与核心考点") || trimmed.contains("核心考点全览") ||
+                trimmed.contains("表达方法与构思艺术") || trimmed.contains("表达方法深度说透") ||
+                trimmed.contains("直接借鉴写作锦囊") || trimmed.contains("写作锦囊") || trimmed.contains("思考考点")
+
+        // 2. 汉字序号规范匹配 (一、/ 二、/ 三、/ 四、/ 五、以及其各种标点变体)
+        val chineseNumRegex = Regex(
+            """^(?:#{1,6}\s*)?(?:\*{1,2})?(?:[^\w\s\u4e00-\u9fa5]{1,6}\s*)?(?:[一二三四五]|[1-5])[、.．:：\s\-_].*"""
+        )
+        val isNumHit = chineseNumRegex.matches(trimmed)
+
+        return if (isKeywordHit || isNumHit) {
+            trimmed.replace(Regex("^#+\\s*"), "")
+                .replace(Regex("^\\*+\\s*"), "")
+                .replace(Regex("\\*+$"), "")
+                .trim()
+        } else null
+    }
+
     for (rawLine in lines) {
         val trimmed = rawLine.trim()
         if (trimmed == "---") continue
 
-        // 过滤掉残留的任何导学前缀套话
-        if (trimmed.contains("全景深度导读与核心考点清单") || trimmed.contains("全景深度导读与全套知识点清单")) {
-            continue
-        }
-
-        if (headerPattern.matches(trimmed)) {
+        val detectedTitle = matchSectionHeader(rawLine)
+        if (detectedTitle != null) {
             // 匹配到了新的大关键点
             commitCurrentSection()
-            currentTitle = trimmed.replace(Regex("^#+\\s*"), "").trim()
+            currentTitle = detectedTitle
         } else {
             if (currentTitle == null) {
-                // 尚未遇到第一个关键点之前的文本：作为篇名确认行（如《荷塘月色》（朱自清））
-                if (trimmed.isNotBlank() && !trimmed.contains("导学如下") && !trimmed.contains("导读如下") && !trimmed.contains("清单如下")) {
-                    bookHeader = if (bookHeader == null) trimmed else "$bookHeader $trimmed"
+                // 【核心要求】：尚未遇到第一个板块（一、）之前的所有废话一律彻底过滤丢弃！
+                // 仅当包含《书名号》且字数简短时，提取纯正作品名徽章
+                val hasBookMark = trimmed.contains("《") && trimmed.contains("》") && trimmed.length <= 40
+                val hasNonsense = trimmed.contains("导读") || trimmed.contains("导学") ||
+                        trimmed.contains("分析") || trimmed.contains("如下") ||
+                        trimmed.contains("剖析") || trimmed.contains("清单") ||
+                        trimmed.contains("整理") || trimmed.contains("你好")
+                if (hasBookMark && !hasNonsense && bookHeader == null) {
+                    val match = Regex("""《[^》]+》(?:[（(][^）)]+[）)])?""").find(trimmed)
+                    bookHeader = match?.value ?: trimmed
                 }
+                // 所有开篇的客套话、总论、前缀说明在此被物理丢弃，绝不上屏！
             } else {
                 currentBody.append(rawLine).append("\n")
             }
@@ -1114,7 +1139,7 @@ fun parseReadingSections(markdown: String): Pair<String?, List<ReadingSection>> 
 
     // 极端兜底：如果行扫描未能成功切分成多个，尝试旧版正则
     if (sections.isEmpty()) {
-        val fallbackParts = cleanedMarkdown.split(Regex("(?=### )"))
+        val fallbackParts = markdown.split(Regex("(?=### )"))
         for (part in fallbackParts) {
             val trimmed = part.trim()
             if (trimmed.isBlank() || trimmed == "---") continue

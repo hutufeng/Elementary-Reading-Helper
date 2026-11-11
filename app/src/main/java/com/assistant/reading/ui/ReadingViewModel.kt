@@ -270,22 +270,14 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
     }
 
     /**
-     * 将 Markdown 智能解析为段落卡片 (过滤多余大标题/引言前缀，自适应识别5大关键点，确保精准拆分折叠)
+     * 将 Markdown 智能解析为段落卡片 (彻底过滤一二三四五前面的所有废话，双重语义校验精准识别5大关键点，确保无缝折叠点读)
      */
     private fun parseSections(markdown: String): List<ReadingSection> {
         if (markdown.isBlank()) return emptyList()
-        val cleanedMarkdown = markdown
-            .replace(Regex("^#+\\s*.*全景深度.*考点清单.*\\R*", RegexOption.IGNORE_CASE), "")
-            .replace(Regex("^.*全景深度导读与核心考点清单.*(?=\\R)", RegexOption.IGNORE_CASE), "")
-            .trim()
 
-        val lines = cleanedMarkdown.lines()
+        val lines = markdown.lines()
         val sections = mutableListOf<ReadingSection>()
         var sectionIndex = 0
-
-        val headerPattern = Regex(
-            """^(?:#{1,6}\s*)?(?:[^\w\s\u4e00-\u9fa5]{1,4}\s*)?(?:[一二三四五]、|（[一二三四五]）|【[一二三四五]】|第[一二三四五]部分|零障碍逐句精讲|文白全景对照).*"""
-        )
 
         var currentTitle: String? = null
         val currentBody = StringBuilder()
@@ -305,22 +297,55 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
             }
         }
 
+        // 标题判定函数：结合序号与核心专属语义词，彻底根治符号/Emoji/标点差异导致五被漏掉的问题
+        fun matchSectionHeader(rawLine: String): String? {
+            val trimmed = rawLine.trim()
+            if (trimmed.isBlank() || trimmed == "---" || trimmed.length > 80) return null
+
+            // 排除正文里的数字小分项 (如 1. 2. 3. 4.)
+            if (Regex("""^[1-4][.、\s]""").containsMatchIn(trimmed)) {
+                return null
+            }
+
+            // 1. 核心专属关键词优先匹配 (最稳固、抗一切标点与格式扰动)
+            val isKeywordHit = trimmed.contains("零障碍逐句精讲") || trimmed.contains("文白全景对照") ||
+                    trimmed.contains("这篇作品究竟讲了什么") || trimmed.contains("创作背景与时代风貌") ||
+                    trimmed.contains("中心思想与内核概括") || trimmed.contains("核心主旨标准概括") ||
+                    trimmed.contains("重要知识点·核心考点") || trimmed.contains("重要知识点与核心考点") || trimmed.contains("核心考点全览") ||
+                    trimmed.contains("表达方法与构思艺术") || trimmed.contains("表达方法深度说透") ||
+                    trimmed.contains("直接借鉴写作锦囊") || trimmed.contains("写作锦囊") || trimmed.contains("思考考点")
+
+            // 2. 汉字序号规范匹配 (一、/ 二、/ 三、/ 四、/ 五、以及其各种标点变体)
+            val chineseNumRegex = Regex(
+                """^(?:#{1,6}\s*)?(?:\*{1,2})?(?:[^\w\s\u4e00-\u9fa5]{1,6}\s*)?(?:[一二三四五]|[1-5])[、.．:：\s\-_].*"""
+            )
+            val isNumHit = chineseNumRegex.matches(trimmed)
+
+            return if (isKeywordHit || isNumHit) {
+                trimmed.replace(Regex("^#+\\s*"), "")
+                    .replace(Regex("^\\*+\\s*"), "")
+                    .replace(Regex("\\*+$"), "")
+                    .trim()
+            } else null
+        }
+
         for (rawLine in lines) {
             val trimmed = rawLine.trim()
             if (trimmed == "---") continue
-            if (trimmed.contains("全景深度导读与核心考点清单") || trimmed.contains("全景深度导读与全套知识点清单")) continue
 
-            if (headerPattern.matches(trimmed)) {
+            val detectedTitle = matchSectionHeader(rawLine)
+            if (detectedTitle != null) {
                 commitCurrentSection()
-                currentTitle = trimmed.replace(Regex("^#+\\s*"), "").trim()
+                currentTitle = detectedTitle
             } else if (currentTitle != null) {
+                // 仅当已经进入第一个板块之后才开始记录正文，板块一之前的所有开篇套话与废话自动被过滤排除
                 currentBody.append(rawLine).append("\n")
             }
         }
         commitCurrentSection()
 
         if (sections.isEmpty()) {
-            val fallbackParts = cleanedMarkdown.split(Regex("(?=### )"))
+            val fallbackParts = markdown.split(Regex("(?=### )"))
             for (part in fallbackParts) {
                 val trimmed = part.trim()
                 if (trimmed.isBlank() || trimmed == "---") continue
