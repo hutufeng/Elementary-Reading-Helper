@@ -39,6 +39,7 @@ import com.assistant.reading.ui.ReadingSection
 import com.assistant.reading.ui.ReadingViewModel
 import com.assistant.reading.ui.UiChatMessage
 import com.assistant.reading.ui.solver.MathSolverScreen
+import com.assistant.reading.ui.solver.ReadingWebSolverScreen
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
@@ -58,11 +59,6 @@ class MainActivity : ComponentActivity() {
                 val context = LocalContext.current
                 val playbackState by voiceManager.playbackState.collectAsState()
                 var showSettingsDialog by remember { mutableStateOf(false) }
-
-                // 关联全局 DeepSeek Bridge (实现理科与语文共享单例免登会话)
-                LaunchedEffect(bridgeManager) {
-                    vm.setBridgeManager(bridgeManager)
-                }
 
                 // 同步当前语速到 VoiceManager
                 LaunchedEffect(uiState.speechRate) {
@@ -228,14 +224,22 @@ class MainActivity : ComponentActivity() {
                     }
                 ) { padding ->
                     if (selectedTab == 0) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(Color(0xFFF9F7F1)) // 柔光护眼米色
-                                .padding(padding)
-                                .padding(14.dp)
-                                .verticalScroll(rememberScrollState())
-                        ) {
+                        if (uiState.engineMode == "DEEPSEEK_WEB") {
+                            ReadingWebSolverScreen(
+                                bridgeManager = bridgeManager,
+                                voiceManager = voiceManager,
+                                onSwitchToApi = { vm.setReadingEngine("API") },
+                                modifier = Modifier.padding(padding)
+                            )
+                        } else {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color(0xFFF9F7F1)) // 柔光护眼米色
+                                    .padding(padding)
+                                    .padding(14.dp)
+                                    .verticalScroll(rememberScrollState())
+                            ) {
                         // 1. 顶部全能快捷操作条
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -576,7 +580,8 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
-                } else {
+                }
+            } else {
                     // 选项卡 2：理科深度解题 (内置 DeepSeek-R1 满血图文推理)
                     MathSolverScreen(
                         bridgeManager = bridgeManager,

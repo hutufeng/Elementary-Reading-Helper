@@ -7,9 +7,6 @@ import androidx.lifecycle.viewModelScope
 import com.assistant.reading.core.ai.AppSettingsManager
 import com.assistant.reading.core.ai.ChatMessage
 import com.assistant.reading.core.ai.ZhipuAiClient
-import com.assistant.reading.core.bridge.AuthStatus
-import com.assistant.reading.core.bridge.DeepSeekBridgeManager
-import com.assistant.reading.core.bridge.SolveStatus
 import com.assistant.reading.core.ocr.OcrManager
 import com.assistant.reading.core.update.UpdateInfo
 import com.assistant.reading.core.update.UpdateManager
@@ -54,7 +51,6 @@ data class ReadingUiState(
 class ReadingViewModel(application: Application) : AndroidViewModel(application) {
 
     private val ocrManager = OcrManager(application)
-    private var bridgeManager: DeepSeekBridgeManager? = null
 
     // 动态注入用户配置的 Key、Base URL 与 Model Name
     private val aiClient = ZhipuAiClient(
@@ -75,10 +71,6 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
         )
     )
     val uiState: StateFlow<ReadingUiState> = _uiState.asStateFlow()
-
-    fun setBridgeManager(manager: DeepSeekBridgeManager) {
-        this.bridgeManager = manager
-    }
 
     fun setReadingEngine(mode: String) {
         AppSettingsManager.saveReadingEngine(getApplication(), mode)
@@ -224,7 +216,7 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
     }
 
     /**
-     * 启动全景导学 (支持 API 接口流式模式 与 DeepSeek 网页免 Key 极速模式)
+     * 启动全景导学 (API 接口原生流式推导)
      * 防重入、会话彻底隔离、支持任务生命周期管控
      */
     fun startReadingAssistant(query: String = _uiState.value.inputText) {
@@ -234,66 +226,6 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
         // 停止前序可能在执行的任务
         readingJob?.cancel()
 
-        if (_uiState.value.engineMode == "DEEPSEEK_WEB") {
-            // DeepSeek 网页模式 (免 Key、共用理科解题已登录的 WebView 会话)
-            if (bridgeManager == null || bridgeManager?.authStatus?.value != AuthStatus.LOGGED_IN) {
-                _uiState.value = _uiState.value.copy(
-                    updateMessage = "⚠️ DeepSeek 网页未登录！请切换至【理科解题】登录账号，登录一次全局共享免密使用。"
-                )
-                return
-            }
-
-            val guidePrompt = ZhipuAiClient.buildGuidePrompt(_uiState.value.isDetailedMode)
-            val customPrompt = """
-                $guidePrompt
-                
-                【请对以下篇目/文本开展全景深度导读】：
-                $trimmed
-            """.trimIndent()
-
-            bridgeManager?.solveProblem(
-                rawProblemText = trimmed,
-                imageBase64 = null,
-                enableR1 = false, // 语文伴读极速模式：关闭 R1 深度思考
-                customPrompt = customPrompt
-            )
-
-            readingJob = viewModelScope.launch {
-                _uiState.value = _uiState.value.copy(
-                    isLoading = true,
-                    readingResult = "",
-                    sections = emptyList(),
-                    chatHistory = emptyList() // 彻底隔离历史问答
-                )
-
-                try {
-                    launch {
-                        bridgeManager?.currentAnswer?.collect { answer ->
-                            if (_uiState.value.engineMode == "DEEPSEEK_WEB" && answer.isNotBlank()) {
-                                _uiState.value = _uiState.value.copy(
-                                    readingResult = answer,
-                                    sections = parseSections(answer)
-                                )
-                            }
-                        }
-                    }
-                    launch {
-                        bridgeManager?.solveStatus?.collect { status ->
-                            if (_uiState.value.engineMode == "DEEPSEEK_WEB") {
-                                if (status == SolveStatus.SUCCESS || status == SolveStatus.ERROR) {
-                                    _uiState.value = _uiState.value.copy(isLoading = false)
-                                }
-                            }
-                        }
-                    }
-                } catch (e: CancellationException) {
-                    // 用户主动停止或取消
-                }
-            }
-            return
-        }
-
-        // 默认：API 接口流式模式
         readingJob = viewModelScope.launch {
             _uiState.value = _uiState.value.copy(
                 isLoading = true,
@@ -327,9 +259,6 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
     fun stopReadingAssistant() {
         readingJob?.cancel()
         readingJob = null
-        if (_uiState.value.engineMode == "DEEPSEEK_WEB") {
-            bridgeManager?.stopSolving()
-        }
         _uiState.value = _uiState.value.copy(isLoading = false)
     }
 
@@ -369,41 +298,6 @@ class ReadingViewModel(application: Application) : AndroidViewModel(application)
             chatQuestion = "",
             isChatLoading = true
         )
-
-        if (_uiState.value.engineMode == "DEEPSEEK_WEB") {
-            // DeepSeek 网页模式追问
-            if (bridgeManager == null || bridgeManager?.authStatus?.value != AuthStatus.LOGGED_IN) {
-                _uiState.value = _uiState.value.copy(
-                    isChatLoading = false,
-                    updateMessage = "⚠️ DeepSeek 网页未登录！请在【理科解题】页登录。"
-                )
-                return
-            }
-
-            val aiMessage = UiChatMessage(isUser = false, content = "")
-            _uiState.value = _uiState.value.copy(chatHistory = _uiState.value.chatHistory + aiMessage)
-            bridgeManager?.sendFollowUp(questionText)
-
-            viewModelScope.launch {
-                launch {
-                    bridgeManager?.currentAnswer?.collect { answer ->
-                        val updatedHistory = _uiState.value.chatHistory.toMutableList()
-                        if (updatedHistory.isNotEmpty()) {
-                            updatedHistory[updatedHistory.lastIndex] = aiMessage.copy(content = answer)
-                            _uiState.value = _uiState.value.copy(chatHistory = updatedHistory)
-                        }
-                    }
-                }
-                launch {
-                    bridgeManager?.solveStatus?.collect { status ->
-                        if (status == SolveStatus.SUCCESS || status == SolveStatus.ERROR) {
-                            _uiState.value = _uiState.value.copy(isChatLoading = false)
-                        }
-                    }
-                }
-            }
-            return
-        }
 
         viewModelScope.launch {
             val apiMessages = mutableListOf<ChatMessage>()
