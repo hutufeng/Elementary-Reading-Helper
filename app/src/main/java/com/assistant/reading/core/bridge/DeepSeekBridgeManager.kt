@@ -609,33 +609,35 @@ class DeepSeekBridgeManager(private val context: Context) {
     }
 
     /**
-     * 发送题目求解 (支持图片直发 + 定制 Prompt + R1 深度思考联动 + 状态打点 + 复合点击/回车重试)
+     * 发送推导请求 (支持自定义 Prompt / 图片直发 / R1 深度思考联动 / 状态打点 / 复合点击回车)
+     * 理科默认开启 R1，语文伴读默认关闭 R1 (以标准极速模式直接推导)
      */
     fun solveProblem(
         rawProblemText: String,
         imageBase64: String?,
-        enableR1: Boolean = true
+        enableR1: Boolean = true,
+        customPrompt: String? = null
     ) {
         if (_authStatus.value != AuthStatus.LOGGED_IN) {
             _errorMessage.value = "请先登录 DeepSeek 账号"
             return
         }
 
-        // 新题目开始：清空旧的追问历史和答案，开辟纯净上下文！
+        // 新推导开始：清空旧的追问历史和答案，开辟纯净上下文！
         _qaHistory.value = emptyList()
         _currentThinking.value = ""
         _currentAnswer.value = ""
         _currentAnswerHtml.value = ""
         _currentPlainText.value = ""
-        lastSentQuestion = rawProblemText.ifBlank { "【图片题目】" }
+        lastSentQuestion = rawProblemText.ifBlank { "【输入内容】" }
         _solveStatus.value = SolveStatus.SOLVING
         _errorMessage.value = null
-        _stepDiagnosis.value = "正在初始化题目会话..."
+        _stepDiagnosis.value = "正在初始化推导会话..."
 
         // 启动 Native 端高频主动抓取机制 (每 1.5 秒主动探测一次)
         startActivePolling()
 
-        val promptText = buildProblemPrompt(rawProblemText)
+        val promptText = customPrompt ?: buildProblemPrompt(rawProblemText)
 
         val js = """
             (async function() {

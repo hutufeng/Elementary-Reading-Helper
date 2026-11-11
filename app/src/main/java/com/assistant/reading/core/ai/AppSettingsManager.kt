@@ -101,4 +101,15 @@ object AppSettingsManager {
     fun saveDetailedModeEnabled(context: Context, enabled: Boolean) {
         getPrefs(context).edit().putBoolean(KEY_DETAILED_MODE, enabled).apply()
     }
+
+    /**
+     * 语文伴读引擎 (API 模式 ⇋ DeepSeek 网页免 Key 模式)
+     */
+    fun getReadingEngine(context: Context): String {
+        return getPrefs(context).getString("reading_engine_mode", "API") ?: "API"
+    }
+
+    fun saveReadingEngine(context: Context, mode: String) {
+        getPrefs(context).edit().putString("reading_engine_mode", mode).apply()
+    }
 }

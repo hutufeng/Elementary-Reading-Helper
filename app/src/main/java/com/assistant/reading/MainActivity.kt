@@ -59,6 +59,11 @@ class MainActivity : ComponentActivity() {
                 val playbackState by voiceManager.playbackState.collectAsState()
                 var showSettingsDialog by remember { mutableStateOf(false) }
 
+                // 关联全局 DeepSeek Bridge (实现理科与语文共享单例免登会话)
+                LaunchedEffect(bridgeManager) {
+                    vm.setBridgeManager(bridgeManager)
+                }
+
                 // 同步当前语速到 VoiceManager
                 LaunchedEffect(uiState.speechRate) {
                     voiceManager.setSpeechRate(uiState.speechRate)
@@ -322,7 +327,36 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(modifier = Modifier.height(10.dp))
 
-                        // 2. 课文/短文全能输入框 (支持一键清空)
+                        // 2. 伴读引擎双模切换胶囊 (API 模式 ⇋ DeepSeek 网页免 Key 极速模式)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("伴读引擎：", fontSize = 13.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Medium, color = Color(0xFF1B3B5A))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                FilterChip(
+                                    selected = uiState.engineMode == "API",
+                                    onClick = { vm.setReadingEngine("API") },
+                                    label = { Text("⚡ API 模式", fontSize = 12.sp) },
+                                    leadingIcon = if (uiState.engineMode == "API") {
+                                        { Icon(Icons.Default.Check, null, modifier = Modifier.size(14.dp)) }
+                                    } else null
+                                )
+                                FilterChip(
+                                    selected = uiState.engineMode == "DEEPSEEK_WEB",
+                                    onClick = { vm.setReadingEngine("DEEPSEEK_WEB") },
+                                    label = { Text("🐋 DeepSeek 网页 (免 Key)", fontSize = 12.sp) },
+                                    leadingIcon = if (uiState.engineMode == "DEEPSEEK_WEB") {
+                                        { Icon(Icons.Default.Check, null, modifier = Modifier.size(14.dp)) }
+                                    } else null
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // 3. 课文/短文全能输入框 (支持一键清空)
                         OutlinedTextField(
                             value = uiState.inputText,
                             onValueChange = { vm.updateInputText(it) },
@@ -379,19 +413,24 @@ class MainActivity : ComponentActivity() {
                         } else {
                             Button(
                                 onClick = {
-                                    if (!vm.isKeyConfigured()) {
+                                    if (uiState.engineMode == "API" && !vm.isKeyConfigured()) {
                                         showSettingsDialog = true
-                                        Toast.makeText(context, "请先在设置中配置您的 AI API Key 即可使用", Toast.LENGTH_LONG).show()
+                                        Toast.makeText(context, "当前为 API 模式，请先配置 API Key；或切换为 DeepSeek 网页免 Key 模式！", Toast.LENGTH_LONG).show()
                                     } else {
                                         vm.startReadingAssistant()
                                     }
                                 },
                                 modifier = Modifier.fillMaxWidth().height(46.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2C6454))
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (uiState.engineMode == "DEEPSEEK_WEB") Color(0xFF1B3B5A) else Color(0xFF2C6454)
+                                )
                             ) {
                                 Icon(Icons.Default.AutoStories, null)
                                 Spacer(Modifier.width(8.dp))
-                                Text("开始全景深度导读", fontSize = 16.sp)
+                                Text(
+                                    if (uiState.engineMode == "DEEPSEEK_WEB") "开始全景导读 (DeepSeek 极速)" else "开始全景深度导读",
+                                    fontSize = 16.sp
+                                )
                             }
                         }
 
@@ -522,9 +561,9 @@ class MainActivity : ComponentActivity() {
 
                                     Button(
                                         onClick = {
-                                            if (!vm.isKeyConfigured()) {
+                                            if (uiState.engineMode == "API" && !vm.isKeyConfigured()) {
                                                 showSettingsDialog = true
-                                                Toast.makeText(context, "请先在设置中配置您的 AI API Key 即可使用", Toast.LENGTH_LONG).show()
+                                                Toast.makeText(context, "当前为 API 模式，请先配置 API Key；或切换为 DeepSeek 网页免 Key 模式！", Toast.LENGTH_LONG).show()
                                             } else {
                                                 vm.sendChatQuestion()
                                             }
